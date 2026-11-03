@@ -75,10 +75,12 @@ provides:
     /api/motion:
       post:
         description: >-
-          MOVES THE ROBOT. action: standup, liedown, stop — the running blueprint's M20Connection standup / liedown /
-          stop_movement RPC through the dimos gateway. Blueprint mode only (501 in direct mode); 409 when no blueprint
-          with M20Connection runs. Returns {ok, rpc, module, result, error}
-        x-when: 'the M20 should stand up, lie down or stop'
+          MOVES THE ROBOT. action: standup, liedown, dock, stop — the running blueprint's M20Connection standup /
+          liedown / dock / stop_movement RPC through the dimos gateway. dock starts self-charging (the robot must stand
+          still about 2 m in front of the dock, facing it) and answers at once with what it's doing. Blueprint mode only
+          (501 in direct mode); 409 when no blueprint with M20Connection runs or its M20Connection lacks that RPC.
+          Returns {ok, rpc, module, result, error}
+        x-when: 'the M20 should stand up, lie down, dock to charge or stop'
         requestBody:
           content:
             application/json:
@@ -87,7 +89,7 @@ provides:
                 properties:
                   action:
                     type: string
-                    description: 'standup, liedown or stop'
+                    description: 'standup, liedown, dock or stop'
                   dryRun:
                     type: boolean
                     description: 'validate and return what would be called, without calling it'

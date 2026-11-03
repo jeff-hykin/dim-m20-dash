@@ -12,10 +12,13 @@ const POLL_MS = 2000
 const PEEK_MS = 1000
 const PEEK_TIMEOUT_S = 0.8
 const REQUEST_TIMEOUT_MS = 5000
-/** M20Connection's RPCs the panel offers (no arguments; move takes a Twist the gateway can't build from JSON) */
+/** M20Connection's RPCs the panel offers (no arguments; move takes a Twist the gateway can't build from JSON). dock is
+ * the self-charging skill (dimos andrew/feat/m20-self-charging): it walks onto the dock in front of the robot and
+ * returns at once with what it's doing ("Docking. ..." or "Not docking: <why>."). */
 export const MOTIONS: Record<string, { rpc: string; label: string; moves: boolean }> = {
     standup: { rpc: "standup", label: "Stand up", moves: true },
     liedown: { rpc: "liedown", label: "Lie down", moves: true },
+    dock: { rpc: "dock", label: "Dock (self-charge)", moves: true },
     stop: { rpc: "stop_movement", label: "Stop (zero velocity)", moves: false },
 }
 
@@ -184,7 +187,13 @@ export class Blueprint {
         this.#peeking = true
         try {
             const live = new Set(this.state.streams.map((s) => s.name))
-            const names = this.watched().filter((name) => live.has(name))
+            const watched = new Set(this.watched())
+            for (const name of Object.keys(this.state.peeked)) {
+                if (!watched.has(name)) {
+                    delete this.state.peeked[name] // unwatched: its last value would otherwise show (and stay ticked)
+                }
+            }
+            const names = [...watched].filter((name) => live.has(name))
             await Promise.all(names.map(async (name) => {
                 try {
                     const peeked = await gateway(
@@ -215,6 +224,13 @@ export class Blueprint {
         const connection = this.state.connection
         if (!connection) {
             throw new HttpError(409, `the running blueprint (${this.state.blueprint}) has no M20Connection module`)
+        }
+        if (!connection.rpcs.includes(motion.rpc)) {
+            throw new HttpError(
+                409,
+                `${connection.id} has no ${motion.rpc} RPC (its RPCs: ${connection.rpcs.join(", ") || "none"})` +
+                    (action === "dock" ? ": docking needs a dimos with the M20 self-charging skill" : ""),
+            )
         }
         const path = `active/modules/${encodeURIComponent(connection.id)}/rpcs/${motion.rpc}`
         if (dryRun) {

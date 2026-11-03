@@ -19,7 +19,7 @@ export const INFO: Info = {
 /** what direct mode says when asked to move: there is no direct M20 protocol here (on purpose: it isn't documented) */
 export const DIRECT_MOTION =
     "Direct mode has no motion: M20 Ctrl doesn't speak the M20's own control protocol (it isn't documented here). " +
-    "Switch to blueprint mode and run a blueprint with M20Connection (e.g. deeprobotics-m20-kronknav-control)."
+    "Switch to blueprint mode and run a blueprint with M20Connection (m20-nav, or deeprobotics-m20-kronknav-control before the rename)."
 
 function bool(value: unknown, name: string): boolean {
     if (value === undefined) {
@@ -96,13 +96,15 @@ export const routes: Route[] = [
     {
         method: "POST",
         path: "api/motion",
-        when: "the M20 should stand up, lie down or stop",
+        when: "the M20 should stand up, lie down, dock to charge or stop",
         description:
             `MOVES THE ROBOT. action: ${Object.keys(MOTIONS).join(", ")} — the running blueprint's M20Connection ` +
-            "standup / liedown / stop_movement RPC through the dimos gateway. Blueprint mode only (501 in direct mode); " +
-            "409 when no blueprint with M20Connection runs. Returns {ok, rpc, module, result, error}",
+            "standup / liedown / dock / stop_movement RPC through the dimos gateway. dock starts self-charging (the " +
+            "robot must stand still about 2 m in front of the dock, facing it) and answers at once with what it's " +
+            "doing. Blueprint mode only (501 in direct mode); 409 when no blueprint with M20Connection runs or its " +
+            "M20Connection lacks that RPC. Returns {ok, rpc, module, result, error}",
         params: {
-            action: { type: "string", description: "standup, liedown or stop", required: true },
+            action: { type: "string", description: "standup, liedown, dock or stop", required: true },
             dryRun: { type: "boolean", description: "validate and return what would be called, without calling it" },
         },
         handler: async ({ action, dryRun }) => {

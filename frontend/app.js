@@ -195,8 +195,23 @@ function updateBoard(board, now) {
 }
 
 // ── the blueprint panel (blueprint mode) or the direct-mode notice ──
-async function motion(action, label, moves) {
-    if (moves && !confirm(`${label}: this MOVES THE ROBOT through the running blueprint. Continue?`)) {
+/** what each motion button asks before it sends (null: no question; Stop only zeroes the velocity) */
+const MOTIONS = [
+    ["standup", "Stand up", "Stand up: this MOVES THE ROBOT through the running blueprint. Continue?"],
+    ["liedown", "Lie down", "Lie down: this MOVES THE ROBOT through the running blueprint. Continue?"],
+    [
+        "dock",
+        "Dock",
+        "Dock: the robot WALKS ONTO THE CHARGING DOCK. It must already stand still about 2 m in front of the dock, " +
+        "facing it with both reflectors in view (it can't find the dock from elsewhere). Continue?",
+    ],
+    ["stop", "Stop", null],
+]
+const DOCK_DIRECT =
+    "Docking is the blueprint's M20Connection dock skill: blueprint mode only (direct mode sends nothing to the robot)"
+
+async function motion(action, label, question) {
+    if (question && !confirm(question)) {
         return
     }
     try {
@@ -209,24 +224,61 @@ async function motion(action, label, moves) {
 }
 let motionNote = ""
 
-const MOTIONS = [
-    ["standup", "Stand up", true],
-    ["liedown", "Lie down", true],
-    ["stop", "Stop", false],
-]
+// made once and never taken out of the page: rebuilt every poll, a button pressed across a re-render lost its click
+const motionButtons = Object.fromEntries(MOTIONS.map(([action, label, question]) => [
+    action,
+    el(
+        "button",
+        { "data-ui": `motion.${action}`, disabled: true, onclick: () => motion(action, label, question) },
+        label,
+    ),
+]))
+const motionRow = el("div.motion", { style: "margin:8px 0" }, Object.values(motionButtons))
+const panelTop = el("div")
+const panelRest = el("div")
 
 async function toggleWatch(name, watched) {
     const settings = await api("GET", "api/settings")
     const streams = new Set(settings.blueprintStreams)
     watched ? streams.add(name) : streams.delete(name)
     await api("PUT", "api/settings", { blueprintStreams: [...streams] })
+    currentStreams = streams
+    // the settings form's list too, or its Save would put back what the checkbox just changed
+    document.getElementById("streams").value = [...streams].join(", ")
     refresh()
+}
+
+/** Each button's state: enabled only with a running blueprint whose M20Connection has that RPC. */
+function updateMotionButtons(state) {
+    const bp = state.blueprint ?? {}
+    const rpcs = new Set(bp.connection?.rpcs ?? [])
+    const rpcOf = { standup: "standup", liedown: "liedown", dock: "dock", stop: "stop_movement" }
+    for (const [action, button] of Object.entries(motionButtons)) {
+        let why = null
+        if (state.mode === "direct") {
+            why = action === "dock" ? DOCK_DIRECT : state.directMotion
+        } else if (!bp.running) {
+            why = "no blueprint running"
+        } else if (!bp.connection) {
+            why = "the running blueprint has no M20Connection"
+        } else if (!rpcs.has(rpcOf[action])) {
+            why = action === "dock"
+                ? `${bp.connection.id} has no dock RPC: docking needs a dimos with the M20 self-charging skill`
+                : `${bp.connection.id} has no ${rpcOf[action]} RPC`
+        }
+        button.disabled = why !== null
+        button.title = why ?? ""
+    }
 }
 
 function blueprintPanel(state) {
     const panel = document.getElementById("blueprint")
+    if (panel.children.length !== 3) {
+        panel.replaceChildren(panelTop, motionRow, panelRest)
+    }
+    updateMotionButtons(state)
     if (state.mode === "direct") {
-        panel.replaceChildren(
+        panelTop.replaceChildren(
             el("div.head", {}, el("h2", {}, "Direct mode")),
             el(
                 "div.note",
@@ -235,18 +287,12 @@ function blueprintPanel(state) {
                     "protocol (it isn't documented here), so nothing is sent to the robot. Switch to Blueprint mode to " +
                     "command it through a running dimos blueprint's M20Connection.",
             ),
-            el(
-                "div.motion",
-                {},
-                MOTIONS.map(([, label]) => el("button", { disabled: true, title: state.directMotion }, label)),
-            ),
         )
+        panelRest.replaceChildren()
         return
     }
     const bp = state.blueprint ?? {}
-    const watched = new Set(Object.keys(bp.peeked ?? {}))
     const lidarStreams = (bp.streams ?? []).filter((s) => /lidar|points|cloud/i.test(s.name))
-    const canMove = bp.running && bp.connection
     const status = bp.error ? el("span.error", {}, bp.error) : bp.running
         ? el(
             "span",
@@ -256,8 +302,7 @@ function blueprintPanel(state) {
             el("span.muted", {}, ` · ${bp.streams.length} streams`),
         )
         : el("span.muted", {}, "no blueprint running")
-    // nulls are the parts that don't apply right now
-    panel.replaceChildren(...[
+    panelTop.replaceChildren(
         el("div.head", {}, el("h2", {}, "Blueprint"), status),
         el(
             "div.muted",
@@ -266,20 +311,12 @@ function blueprintPanel(state) {
                 ? `Motion goes through ${bp.connection.id}'s RPCs (the blueprint keeps the robot connection).`
                 : bp.running
                 ? "This blueprint has no M20Connection: motion is unavailable."
-                : "Launch an M20 blueprint (e.g. deeprobotics-m20-kronknav-control) to watch its streams and command it.",
+                : "Launch an M20 blueprint (e.g. m20-nav) to watch its streams and command it.",
         ),
-        el(
-            "div.motion",
-            { style: "margin:8px 0" },
-            MOTIONS.map(([action, label, moves]) =>
-                el("button", {
-                    "data-ui": `motion.${action}`,
-                    disabled: !canMove,
-                    onclick: () => motion(action, label, moves),
-                }, label)
-            ),
-        ),
-        motionNote ? el("div.muted.mono", {}, motionNote) : null,
+    )
+    // nulls are the parts that don't apply right now
+    panelRest.replaceChildren(...[
+        motionNote ? el("div.muted.mono", { "data-ui": "motion.note" }, motionNote) : null,
         lidarStreams.length
             ? el(
                 "div.muted",
@@ -299,7 +336,6 @@ function blueprintPanel(state) {
                 ),
                 bp.streams.map((stream) => {
                     const peeked = bp.peeked?.[stream.name]
-                    const isWatched = currentStreams.has(stream.name) || watched.has(stream.name)
                     return el(
                         "tr",
                         {},
@@ -308,7 +344,7 @@ function blueprintPanel(state) {
                             {},
                             el("input", {
                                 type: "checkbox",
-                                checked: isWatched,
+                                checked: currentStreams.has(stream.name),
                                 title: "sample (and record) this stream",
                                 onchange: (event) => toggleWatch(stream.name, event.target.checked),
                             }),

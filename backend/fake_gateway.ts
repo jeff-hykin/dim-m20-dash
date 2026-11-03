@@ -1,13 +1,16 @@
 // A stand-in for dimos's gateway with an M20 blueprint "running": the routes blueprint mode calls (active, streams,
 // peek, modules, RPC calls, history/recordings), answered the way the real gateway shapes them. For the tests and for
 // demos with no dog: `deno task fake-gateway` (port 8790), then run M20 Ctrl with M20_DASH_DESKTOP_URL pointing at it.
-// Nothing here talks to a robot; standup/liedown just change the simulated motion_state.
+// Nothing here talks to a robot; standup/liedown/dock/undock just change the simulated motion_state and charge state.
+// dock answers the way M20Connection's self-charging skill does: at once, "Docking. ..." or "Not docking: <why>.".
 
 export type FakeGateway = {
     url: string
     calls: string[]
     server: Deno.HttpServer
     setRunning(running: boolean): void
+    /** false: an M20Connection from before the self-charging skill (no dock / undock / charge_status RPCs) */
+    setCanDock(canDock: boolean): void
 }
 
 const STREAMS = [
@@ -24,6 +27,8 @@ export function startFakeGateway(port = 0, recordingsPath: string | null = null)
     const calls: string[] = []
     let running = true
     let motionState = 1 // lying down
+    let charge = "idle" // idle | charging
+    let canDock = true
     const startedAt = Date.now()
     const value = (name: string) => {
         const t = (Date.now() - startedAt) / 1000
@@ -87,9 +92,15 @@ export function startFakeGateway(port = 0, recordingsPath: string | null = null)
                     {
                         id: "m20connection",
                         class: "dimos.robot.deeprobotics.m20.connection.M20Connection",
-                        rpcs: ["liedown", "move", "set_navigation_terrain", "standup", "stop_movement"].map((name) => ({
-                            name,
-                        })),
+                        rpcs: [
+                            ...(canDock ? ["charge_status", "dock"] : []),
+                            "liedown",
+                            "move",
+                            "set_navigation_terrain",
+                            "standup",
+                            "stop_movement",
+                            ...(canDock ? ["undock"] : []),
+                        ].map((name) => ({ name, skill: ["charge_status", "dock", "undock"].includes(name) })),
                     },
                     { id: "m20camerarelay", class: "dimos.robot.deeprobotics.m20.camera.M20CameraRelay", rpcs: [] },
                 ],
@@ -110,13 +121,36 @@ export function startFakeGateway(port = 0, recordingsPath: string | null = null)
         }
         const rpc = /^active\/modules\/([^/]+)\/rpcs\/([^/]+)$/.exec(path)
         if (rpc && request.method === "POST") {
-            calls.push(`${rpc[1]}.${rpc[2]} ${await request.text()}`)
-            if (rpc[2] === "standup") {
+            const name = rpc[2]
+            calls.push(`${rpc[1]}.${name} ${await request.text()}`)
+            const skills = ["dock", "undock", "charge_status"]
+            if (skills.includes(name) && !canDock) {
+                return Response.json({ detail: `${rpc[1]} has no RPC ${name}` }, { status: 404 })
+            }
+            let result: unknown = name === "stop_movement" ? null : true
+            if (name === "dock") {
+                result = charge !== "idle"
+                    ? `Not docking: its charge status is ${charge}.`
+                    : motionState !== 2
+                    ? "Not docking: the robot is not standing ready to walk."
+                    : "Docking. A tool update reports each stage and the result."
+                if (charge === "idle" && motionState === 2) {
+                    charge = "charging"
+                    motionState = 1
+                }
+            } else if (name === "undock") {
+                result = charge === "idle" ? "Not undocking: the robot is not on the dock." : "Undocking."
+                charge = "idle"
+            } else if (name === "charge_status") {
+                result = charge
+            } else if (charge !== "idle" && ["standup", "liedown", "stop_movement", "move"].includes(name)) {
+                result = false // M20Connection refuses motion while on the dock
+            } else if (name === "standup") {
                 motionState = 2
-            } else if (rpc[2] === "liedown") {
+            } else if (name === "liedown") {
                 motionState = 1
             }
-            return Response.json({ ok: true, result: rpc[2] === "stop_movement" ? null : true, error: null })
+            return Response.json({ ok: true, result, error: null })
         }
         return Response.json({ detail: `no ${request.method} ${path}` }, { status: 404 })
     })
@@ -127,6 +161,9 @@ export function startFakeGateway(port = 0, recordingsPath: string | null = null)
         server,
         setRunning: (value: boolean) => {
             running = value
+        },
+        setCanDock: (value: boolean) => {
+            canDock = value
         },
     }
 }

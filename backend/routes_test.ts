@@ -138,6 +138,61 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
     }
 })
 
+Deno.test(
+    "dock: blueprint mode only, through M20Connection's dock RPC, refused when it has none",
+    options,
+    async () => {
+        const dir = Deno.makeTempDirSync()
+        const gateway = startFakeGateway()
+        setGatewayUrl(gateway.url)
+        loadSettings(`${dir}/settings.json`)
+        updateSettings({ source: "fake", mode: "blueprint", blueprintStreams: ["odom", "motion_state"] })
+        applySettings()
+        try {
+            await until(async () => (await call("GET", "api/blueprint")).json.connection?.rpcs.includes("dock"))
+            const dry = (await call("POST", "api/motion", { action: "dock", dryRun: true })).json
+            assertEquals(dry.wouldCall, "POST active/modules/m20connection/rpcs/dock")
+            assertEquals(gateway.calls, [])
+
+            // lying down: M20Connection says why not (ok, with its answer as the result)
+            const lying = (await call("POST", "api/motion", { action: "dock" })).json
+            assertEquals(lying.ok, true)
+            assertMatch(lying.result, /^Not docking: the robot is not standing/)
+            await call("POST", "api/motion", { action: "standup" })
+            const docking = (await call("POST", "api/motion", { action: "dock" })).json
+            assertMatch(docking.result, /^Docking\./)
+            assertEquals(gateway.calls, [
+                'm20connection.dock {"args":[],"kwargs":{}}',
+                'm20connection.standup {"args":[],"kwargs":{}}',
+                'm20connection.dock {"args":[],"kwargs":{}}',
+            ])
+
+            // an unwatched stream's last value goes (it kept its checkbox ticked)
+            await until(async () => Boolean((await call("GET", "api/blueprint")).json.peeked.odom))
+            await call("PUT", "api/settings", { blueprintStreams: ["motion_state"] })
+            await until(async () => !(await call("GET", "api/blueprint")).json.peeked.odom)
+
+            // an M20Connection from before self-charging: refused here, nothing sent
+            gateway.setCanDock(false)
+            gateway.setRunning(false)
+            await until(async () => (await call("GET", "api/blueprint")).json.running === false)
+            gateway.setRunning(true)
+            await until(async () => (await call("GET", "api/blueprint")).json.connection?.rpcs.includes("standup"))
+            const old = await call("POST", "api/motion", { action: "dock" })
+            assertEquals(old.status, 409)
+            assertMatch(old.json.error, /no dock RPC.*self-charging/)
+
+            // direct mode: no dock either
+            await call("PUT", "api/mode", { mode: "direct" })
+            assertEquals((await call("POST", "api/motion", { action: "dock" })).status, 501)
+            assertEquals(gateway.calls.length, 3)
+        } finally {
+            stopApp()
+            await gateway.server.shutdown()
+        }
+    },
+)
+
 Deno.test("dimos.yaml lists exactly the backend's routes", async () => {
     const run = await new Deno.Command(Deno.execPath(), {
         args: ["run", "-A", new URL("../scripts/check_endpoints.ts", import.meta.url).pathname],
