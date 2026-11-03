@@ -53,5 +53,7 @@ if (socket) {
     }
     Deno.serve({ path: socket, transport: "unix", onListen: () => console.error(`listening on ${socket}`) }, serve)
 } else {
-    Deno.serve({ port: Number(Deno.env.get("M20_DASH_PORT") ?? 8788) }, serve)
+    // loopback unless asked: the API moves the robot and has no login of its own
+    const hostname = Deno.env.get("M20_DASH_HOST") ?? "127.0.0.1"
+    Deno.serve({ hostname, port: Number(Deno.env.get("M20_DASH_PORT") ?? 8788) }, serve)
 }

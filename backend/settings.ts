@@ -41,11 +41,17 @@ export function loadSettings(path = `${dataDir()}/settings.json`): Settings {
     } catch {
         current = structuredClone(DEFAULT_SETTINGS)
     }
+    current = withForcedSource(current)
+    return current
+}
+
+/** M20_DASH_SOURCE's source, if set (so Defaults under `deno task fake` stays on the fake boards, not ssh) */
+function withForcedSource(next: Settings): Settings {
     const forced = Deno.env.get("M20_DASH_SOURCE")
     if (forced === "fake" || forced === "ssh") {
-        current.source = forced
+        next.source = forced
     }
-    return current
+    return next
 }
 
 function validate(next: Settings): Settings {
@@ -93,7 +99,7 @@ function validate(next: Settings): Settings {
 /** Applies a change (any subset; reset: true starts from the defaults), saves it and returns the new settings. */
 export function updateSettings(change: Partial<Settings> & { reset?: boolean }): Settings {
     const { reset, ...rest } = change
-    const base = reset ? structuredClone(DEFAULT_SETTINGS) : structuredClone(current)
+    const base = reset ? withForcedSource(structuredClone(DEFAULT_SETTINGS)) : structuredClone(current)
     const merged = { ...base, ...rest, patterns: { ...base.patterns, ...(rest.patterns ?? {}) } }
     current = validate(merged)
     if (file) {

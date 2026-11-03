@@ -119,6 +119,12 @@ export async function handle(request: Request, routes: Route[], info: Info): Pro
         if (!pathParams) {
             continue
         }
+        const site = request.headers.get("sec-fetch-site")
+        if (request.method !== "GET" && site && site !== "same-origin" && site !== "none") {
+            // another page in the browser (any site, or another localhost port): a plain-text POST needs no CORS
+            // preflight, so without this any open tab could send api/motion
+            return Response.json({ error: `refused a ${site} ${request.method}` }, { status: 403 })
+        }
         const args: Record<string, unknown> = { ...Object.fromEntries(url.searchParams), ...pathParams }
         if (request.method !== "GET" && request.method !== "DELETE") {
             const text = await request.text()
