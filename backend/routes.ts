@@ -187,6 +187,8 @@ export const routes: Route[] = [
                 mode: settings().mode,
                 source: settings().source,
                 boards: settings().boards,
+                // each board's link as the recording starts (later changes go on /boards/<board>/link)
+                links: boards.summary().map(({ name, reachable, link }) => ({ name, reachable, link: link.state })),
                 blueprint: settings().mode === "blueprint" ? blueprint.state.blueprint : null,
             }),
     },
