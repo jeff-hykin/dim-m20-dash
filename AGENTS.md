@@ -18,6 +18,8 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
 - `deno task test` (fake ssh, fake boards, a fake dimos gateway: no robot needed).
 - `deno task fake` → http://localhost:8788 with simulated boards; add `M20_DASH_DESKTOP_URL=http://127.0.0.1:5555`
   to use a running Desktop's dimos gateway (blueprint mode).
+- No blueprint to hand: `deno task fake-gateway` (a stand-in dimos gateway with an M20 blueprint, port 8790) and
+  `deno task demo` (fake boards against it).
 - Installed: edit `~/.dimos/apps/dim-m20-dash`, `nix build .#dimosApp`, then
   `curl -fsS -X POST localhost:5555/gateways/desktop/management/apps/dim-m20-dash/reload`.
 

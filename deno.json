@@ -5,16 +5,25 @@
         "fake": "M20_DASH_SOURCE=fake deno run -A backend/main.ts",
         "test": "deno test -A backend/",
         "check": "deno check backend/main.ts && deno task check-endpoints",
-        "check-endpoints": "deno run -A scripts/check_endpoints.ts"
+        "check-endpoints": "deno run -A scripts/check_endpoints.ts",
+        "fake-gateway": "deno run -A backend/fake_gateway.ts",
+        "demo": "M20_DASH_SOURCE=fake M20_DASH_DESKTOP_URL=http://127.0.0.1:8790 deno run -A backend/main.ts"
     },
     "fmt": {
         "indentWidth": 4,
         "semiColons": false,
         "lineWidth": 120,
-        "include": ["backend", "scripts", "frontend"]
+        "include": [
+            "backend",
+            "scripts",
+            "frontend"
+        ]
     },
     "lint": {
-        "include": ["backend", "scripts"]
+        "include": [
+            "backend",
+            "scripts"
+        ]
     },
     "imports": {
         "@std/assert": "jsr:@std/assert@1",

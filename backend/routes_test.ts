@@ -1,11 +1,12 @@
-// Every route against fake boards and a fake dimos gateway (a local server answering active, streams, peek, modules
-// and RPC calls the way dimos's gateway does): mode switching, motion through the blueprint's RPCs only, direct mode's
+// Every route against fake boards and a fake dimos gateway (fake_gateway.ts: active, streams, peek, modules and RPC
+// calls shaped the way dimos's gateway answers them): mode switching, motion through the blueprint's RPCs only, direct mode's
 // refusal, and a recording whose mcap holds the boards' stats and the blueprint's streams.
 import { assert, assertEquals, assertMatch } from "@std/assert"
 import { applySettings, stopApp } from "./app.ts"
 import { setGatewayUrl } from "./blueprint.ts"
 import { handle } from "./http.ts"
 import { readMcap } from "./mcap.ts"
+import { startFakeGateway } from "./fake_gateway.ts"
 import { INFO, routes } from "./routes.ts"
 import { loadSettings, updateSettings } from "./settings.ts"
 
@@ -30,84 +31,10 @@ async function until(check: () => boolean | Promise<boolean>, timeoutMs = 8000) 
     }
 }
 
-/** A dimos gateway with one M20 blueprint running; `calls` records every RPC it was asked for. */
-function fakeGateway() {
-    const calls: string[] = []
-    let running = true
-    let n = 0
-    const server = Deno.serve({ port: 0, onListen: () => {} }, async (request) => {
-        const path = new URL(request.url).pathname.replace(/^\/gateways\/dimos\//, "")
-        if (path === "active") {
-            return Response.json({
-                running,
-                runId: running ? "run-1" : null,
-                blueprint: running ? "deeprobotics-m20-kronknav-control" : null,
-                pid: 1,
-                startedAt: null,
-                logDir: null,
-                launch: null,
-            })
-        }
-        if (path === "active/streams") {
-            return Response.json({
-                streams: [
-                    {
-                        name: "odom",
-                        type: "dimos.msgs.geometry_msgs.PoseStamped",
-                        direction: "out",
-                        channel: "/odom",
-                        module: "m20connection",
-                    },
-                    {
-                        name: "motion_state",
-                        type: "dimos.msgs.std_msgs.Int32",
-                        direction: "in",
-                        channel: "/motion_state",
-                        module: "m20connection",
-                    },
-                    {
-                        name: "slam_body_points",
-                        type: "dimos.msgs.sensor_msgs.PointCloud2",
-                        direction: "out",
-                        channel: "/p",
-                        module: "lio",
-                    },
-                ],
-            })
-        }
-        if (path === "active/modules") {
-            return Response.json({
-                modules: [
-                    { id: "rerunbridgemodule", class: "dimos.visualization.rerun.bridge.RerunBridgeModule", rpcs: [] },
-                    {
-                        id: "m20connection",
-                        class: "dimos.robot.deeprobotics.m20.connection.M20Connection",
-                        rpcs: [{ name: "standup" }, { name: "liedown" }, { name: "stop_movement" }, { name: "move" }],
-                    },
-                ],
-            })
-        }
-        const peek = /^active\/streams\/([^/]+)\/peek$/.exec(path)
-        if (peek) {
-            n++
-            const value = peek[1] === "odom" ? { position: { x: n * 0.1, y: 0, z: 0 } } : { data: 3 }
-            return Response.json({ name: peek[1], type: "t", value, ts: Date.now() / 1000 })
-        }
-        const rpc = /^active\/modules\/([^/]+)\/rpcs\/([^/]+)$/.exec(path)
-        if (rpc && request.method === "POST") {
-            calls.push(`${rpc[1]}.${rpc[2]} ${await request.text()}`)
-            return Response.json({ ok: true, result: true, error: null })
-        }
-        return Response.json({ detail: `no ${path}` }, { status: 404 })
-    })
-    const port = (server.addr as Deno.NetAddr).port
-    return { url: `http://127.0.0.1:${port}/gateways/dimos/`, calls, server, stopBlueprint: () => (running = false) }
-}
-
 Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode, a recording", options, async () => {
     const dir = Deno.makeTempDirSync()
     Deno.env.set("M20_DASH_RECORDINGS_DIR", `${dir}/recordings`)
-    const gateway = fakeGateway()
+    const gateway = startFakeGateway()
     setGatewayUrl(gateway.url)
     loadSettings(`${dir}/settings.json`)
     updateSettings({ source: "fake", mode: "blueprint" })
@@ -193,7 +120,7 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
 
         // blueprint mode with no blueprint running: motion is refused, not sent
         await call("PUT", "api/mode", { mode: "blueprint" })
-        gateway.stopBlueprint()
+        gateway.setRunning(false)
         await until(async () => (await call("GET", "api/blueprint")).json.running === false)
         assertEquals((await call("POST", "api/motion", { action: "liedown" })).status, 409)
         assertEquals(gateway.calls.length, 2)
