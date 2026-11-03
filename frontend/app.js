@@ -256,7 +256,8 @@ function blueprintPanel(state) {
             el("span.muted", {}, ` · ${bp.streams.length} streams`),
         )
         : el("span.muted", {}, "no blueprint running")
-    panel.replaceChildren(
+    // nulls are the parts that don't apply right now
+    panel.replaceChildren(...[
         el("div.head", {}, el("h2", {}, "Blueprint"), status),
         el(
             "div.muted",
@@ -324,7 +325,7 @@ function blueprintPanel(state) {
                 }),
             )
             : null,
-    )
+    ].filter(Boolean))
 }
 
 let currentStreams = new Set()
