@@ -1,0 +1,23 @@
+{
+    "lock": false,
+    "tasks": {
+        "dev": "deno run -A --watch backend/main.ts",
+        "fake": "M20_DASH_SOURCE=fake deno run -A backend/main.ts",
+        "test": "deno test -A backend/",
+        "check": "deno check backend/main.ts && deno task check-endpoints",
+        "check-endpoints": "deno run -A scripts/check_endpoints.ts"
+    },
+    "fmt": {
+        "indentWidth": 4,
+        "semiColons": false,
+        "lineWidth": 120,
+        "include": ["backend", "scripts", "frontend"]
+    },
+    "lint": {
+        "include": ["backend", "scripts"]
+    },
+    "imports": {
+        "@std/assert": "jsr:@std/assert@1",
+        "@std/yaml": "jsr:@std/yaml@1"
+    }
+}

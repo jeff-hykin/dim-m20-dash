@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>M20 Ctrl</title>
+        <!-- Desktop's skin tokens (every color and font here is one of them) -->
+        <link rel="stylesheet" href="../../theme.css" />
+        <link rel="stylesheet" href="app.css" />
+        <script type="module" src="app.js"></script>
+    </head>
+    <body>
+        <header class="bar">
+            <div class="title">
+                <span class="name">M20 Ctrl</span>
+                <span class="sub">Deep Robotics Lynx M20</span>
+            </div>
+            <div class="mode" role="group" aria-label="mode">
+                <button
+                    data-mode="blueprint"
+                    data-ui="mode.blueprint"
+                    title="Watch, record and command the running dimos blueprint"
+                >
+                    Blueprint
+                </button>
+                <button data-mode="direct" data-ui="mode.direct" title="Boards only: no blueprint, no motion">
+                    Direct
+                </button>
+            </div>
+            <div class="record">
+                <button id="record" data-ui="record" class="rec-button">Record</button>
+                <span id="record-status" class="mono"></span>
+            </div>
+        </header>
+        <div id="banner" class="banner" hidden></div>
+        <main>
+            <section id="boards" class="boards"></section>
+            <section id="blueprint" class="panel"></section>
+            <details id="settings" class="panel settings">
+                <summary>Settings</summary>
+                <label>Board stats from
+                    <select id="source">
+                        <option value="ssh">ssh (the real boards)</option>
+                        <option value="fake">fake boards (simulated)</option>
+                    </select>
+                </label>
+                <label>Boards (JSON: name, label, hosts tried in order, role, expectLidar, expectDimos)
+                    <textarea id="boards-json" rows="14" spellcheck="false"></textarea>
+                </label>
+                <label>Blueprint streams sampled and recorded (comma separated)
+                    <input id="streams" spellcheck="false" />
+                </label>
+                <div class="row">
+                    <button id="save" data-ui="settings.save">Save</button>
+                    <button id="reset" data-ui="settings.reset">Defaults</button>
+                    <span id="settings-note" class="muted"></span>
+                </div>
+            </details>
+        </main>
+    </body>
+</html>

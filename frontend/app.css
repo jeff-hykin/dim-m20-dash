@@ -1,0 +1,291 @@
+/* Desktop's theme.css holds every token; the fallbacks are only for a standalone run (no Desktop). */
+html,
+body {
+    margin: 0;
+    background: var(--bg, #05070d);
+    color: var(--fg, #e6eaf2);
+    font-family: var(--sans, system-ui, sans-serif);
+    font-size: 14px;
+}
+body {
+    padding-bottom: calc(16px + var(--dim-inset-bottom, 0px));
+}
+.mono {
+    font-family: var(--mono, ui-monospace, monospace);
+}
+.muted {
+    color: var(--muted-fg, #848b9b);
+}
+button,
+select,
+input,
+textarea {
+    font: inherit;
+    color: var(--fg, #e6eaf2);
+    background: var(--input-bg, rgba(255, 255, 255, 0.04));
+    border: 1px solid var(--border-strong, rgba(255, 255, 255, 0.22));
+    border-radius: var(--radius, 0);
+    padding: 6px 12px;
+}
+button {
+    cursor: pointer;
+}
+button:hover:not(:disabled) {
+    background: var(--hover, rgba(255, 255, 255, 0.08));
+}
+button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+.bar {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+    background: var(--surface, #0a0d14);
+}
+.title {
+    display: flex;
+    flex-direction: column;
+    margin-right: auto;
+}
+.title .name {
+    font-family: var(--title-font, inherit);
+    font-size: 18px;
+    letter-spacing: 0.04em;
+}
+.title .sub {
+    color: var(--muted-fg, #848b9b);
+    font-size: 12px;
+}
+.mode {
+    display: flex;
+}
+.mode button {
+    border-radius: 0;
+}
+.mode button.on {
+    background: var(--primary, #4a8cff);
+    color: var(--primary-fg, #fff);
+    border-color: var(--primary, #4a8cff);
+}
+.record {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.rec-button.on {
+    background: var(--danger, #f2707a);
+    color: var(--danger-fg, #fff);
+    border-color: var(--danger, #f2707a);
+}
+.banner {
+    padding: 8px 16px;
+    background: color-mix(in srgb, var(--warn, #e8bf6a) 18%, transparent);
+    border-bottom: 1px solid var(--warn-line, rgba(232, 191, 106, 0.4));
+}
+main {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+.boards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 16px;
+}
+.panel,
+.board {
+    background: var(--card, #0a0d14);
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+    border-radius: var(--radius-lg, 0);
+    padding: 14px;
+}
+.board.stale .numbers,
+.board.stale canvas {
+    opacity: 0.4;
+}
+.board h2,
+.panel h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+}
+.board .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+}
+.board .hosts {
+    font-size: 12px;
+}
+.board .role {
+    font-size: 12px;
+    margin: 2px 0 10px;
+}
+.lights {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.light {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 6px 8px;
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+    border-radius: var(--radius-sm, 0);
+    min-width: 0;
+}
+.light .dot {
+    flex: none;
+    width: 10px;
+    height: 10px;
+    margin-top: 4px;
+    border-radius: var(--radius-round, 50%);
+    background: var(--off, #555);
+}
+.light .what {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted-fg, #848b9b);
+}
+.light .text {
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+.light.ok .dot {
+    background: var(--ok, #8fd4a8);
+    box-shadow: 0 0 6px var(--ok, #8fd4a8);
+}
+.light.warn .dot {
+    background: var(--warn, #e8bf6a);
+}
+.light.bad .dot {
+    background: var(--danger, #f2707a);
+    box-shadow: 0 0 6px var(--danger, #f2707a);
+}
+.light.bad {
+    border-color: var(--danger-line, rgba(242, 112, 122, 0.4));
+}
+.light.unknown .dot {
+    background: transparent;
+    border: 1px dashed var(--muted-fg, #848b9b);
+}
+.cpu {
+    display: flex;
+    gap: 10px;
+    align-items: stretch;
+}
+.cpu .big {
+    font-family: var(--mono, monospace);
+    font-size: 26px;
+    min-width: 72px;
+}
+.cpu .big small {
+    display: block;
+    font-size: 11px;
+    color: var(--muted-fg, #848b9b);
+    font-family: var(--sans, sans-serif);
+}
+.cpu canvas {
+    flex: 1;
+    min-width: 0;
+    height: 64px;
+    border: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+}
+.cores {
+    display: flex;
+    gap: 3px;
+    height: 36px;
+    align-items: flex-end;
+    margin: 8px 0;
+}
+.core {
+    flex: 1;
+    position: relative;
+    height: 100%;
+    background: var(--track, rgba(255, 255, 255, 0.06));
+}
+.core > div {
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--primary, #4a8cff);
+}
+.core.hot > div {
+    background: var(--warn, #e8bf6a);
+}
+.numbers {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 2px 12px;
+    font-size: 12px;
+}
+.numbers span:nth-child(odd) {
+    color: var(--muted-fg, #848b9b);
+}
+.panel .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.motion {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.note {
+    padding: 8px 10px;
+    border: 1px solid var(--warn-line, rgba(232, 191, 106, 0.4));
+    margin: 8px 0;
+    font-size: 13px;
+}
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+th,
+td {
+    text-align: left;
+    padding: 4px 6px;
+    border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+    vertical-align: top;
+}
+td.value {
+    font-family: var(--mono, monospace);
+    max-width: 420px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.settings label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 10px 0;
+}
+.settings textarea,
+.settings input {
+    font-family: var(--mono, monospace);
+    font-size: 12px;
+}
+.row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.error {
+    color: var(--danger, #f2707a);
+}
