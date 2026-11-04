@@ -102,6 +102,15 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         ) {
             assert(topics.has(topic), `${topic} in ${[...topics]}`)
         }
+        // the system logs ride on /logs: each board's health (AOS's Wi-Fi among it) and M20 Ctrl's own log lines
+        const logTypes = messages.filter((m) => m.topic === "/logs").map((m) =>
+            m.message as { type: string; board?: string }
+        )
+        assert(
+            logTypes.some((m) => m.type === "health" && m.board === "aos"),
+            JSON.stringify(logTypes.map((m) => m.type)),
+        )
+        assert(logTypes.some((m) => m.type === "app_log"))
         const odom = messages.find((m) => m.topic === "/blueprint/odom")!.message as {
             value: { position: { x: number } }
         }

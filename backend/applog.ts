@@ -8,6 +8,11 @@ const LOG_LIMIT = 20 * 1024 * 1024
 const MAX_LINE = 4000
 
 let path: string | null = null
+/** where log lines also go (a recording's /logs, while one runs with system logs on); null: nowhere */
+let sink: ((line: string) => void) | null = null
+export function setLogSink(next: ((line: string) => void) | null) {
+    sink = next
+}
 
 /** Opens the log in the data dir (main.ts); before this nothing is written (the tests). */
 export function initLog(dir = dataDir()) {
@@ -27,6 +32,7 @@ export function logPath() {
 export function logLine(text: string) {
     const clipped = text.length > MAX_LINE ? `${text.slice(0, MAX_LINE)}… (${text.length} chars)` : text
     const stamped = `${new Date().toISOString()} ${clipped}`
+    sink?.(clipped)
     if (!path) {
         return
     }

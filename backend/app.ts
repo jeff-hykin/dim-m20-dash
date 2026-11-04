@@ -3,11 +3,12 @@
 // all write to. applySettings() (re)starts whatever a settings change touched.
 // Blueprint mode is the sticky default while a blueprint runs: at start, and whenever a new run starts, a direct mode
 // left over from before goes back to blueprint (choosing direct during a run keeps it for that run).
-import { logLine } from "./applog.ts"
+import { logLine, setLogSink } from "./applog.ts"
 import { Blueprint } from "./blueprint.ts"
 import { Boards } from "./boards.ts"
 import { Direct } from "./direct.ts"
-import { record, recordLog } from "./recording.ts"
+import { onRecording, record, recordLog } from "./recording.ts"
+import { SystemLogs } from "./syslogs.ts"
 import { Robot } from "./robot.ts"
 import { type Settings, settings, updateSettings } from "./settings.ts"
 
@@ -58,6 +59,29 @@ export const direct = new Direct(
     () => Deno.env.get("M20_DASH_CLI") ?? `${Deno.env.get("HOME") ?? "/home/user"}/.local/bin/m20`,
 )
 
+/** the recording's system logs (syslogs.ts), on /logs, while a recording with "System logs" on runs */
+export const systemLogs = new SystemLogs(
+    (message) => record("/logs", message, typeof message.t === "number" ? message.t : Date.now()),
+    (name) => {
+        const board = boards.summary().find((b) => b.name === name)
+        return board ? { stats: board.latest, reachable: board.reachable } : null
+    },
+)
+onRecording((options) => {
+    if (options?.streams.system_logs?.on) {
+        const targets = boards.summary().map((b) => ({
+            name: b.name,
+            // the ssh target the stats link uses now, else its first
+            host: b.link.state === "up" && b.link.host && !b.link.host.includes(" ") ? b.link.host : b.hosts[0],
+        }))
+        systemLogs.start(targets, settings().source === "fake")
+        setLogSink((line) => record("/logs", { type: "app_log", t: Date.now(), line }))
+    } else {
+        systemLogs.stop()
+        setLogSink(null)
+    }
+})
+
 let applied: Settings | null = null
 
 /** Starts what the settings ask for, restarting only what changed. */
@@ -88,5 +112,7 @@ export function stopApp() {
     boards.stop()
     blueprint.stop()
     robot.stop()
+    systemLogs.stop()
+    setLogSink(null)
     applied = null
 }

@@ -17,7 +17,9 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
   - `direct.ts`: driving readiness per mode, Enable driving (`m20 stand` / `m20 direct`: the robot resets its usage mode on every stand and undock, so the CLI sets it after standing), stand up / undock through `m20`, and direct mode's axis-command loop.
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl), with the Record options of
     `record_streams.ts` (stream groups, rate caps, label, folder, splitting). The live topics come raw through
-    `zenoh_tap.py`, which `tap.ts` runs with DIMOS_APP's `dimosPython` against its `zenohConnect` (subscribe only). `settings.ts`: `<dataDir>/settings.json`.
+    `zenoh_tap.py`, which `tap.ts` runs with DIMOS_APP's `dimosPython` against its `zenohConnect` (subscribe only).
+    `syslogs.ts`: the recording's system logs (Go2 Ctrl's health.rs for each board, over one more read-only ssh
+    while recording: health every 2 s, journal warnings, network-safety, AOS's basic_server log, health dumps). `settings.ts`: `<dataDir>/settings.json`.
 - `frontend/` (React + Vite, like G1 Ctrl and Go2 Ctrl; `frontend/dist` is built and committed so no robot builds it):
   `src/App.tsx` the page (main view = camera or 3D, panels on the left, command dock, d-pad / phone thumb sticks);
   `live.ts` the live topics through Desktop's zenoh-gateway (pose from tf/slam_odom, slam_body_points, local_map,

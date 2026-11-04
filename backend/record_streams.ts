@@ -13,6 +13,7 @@ export type GroupId =
     | "robot_status"
     | "boards"
     | "blueprint"
+    | "system_logs"
 
 export type Group = {
     id: GroupId
@@ -123,6 +124,16 @@ export const GROUPS: Group[] = [
         prefix: "/blueprint/",
         default: { on: true, maxHz: null },
         fullRate: "1 Hz, small",
+    },
+    {
+        id: "system_logs",
+        label: "System logs",
+        about: "on /logs, for every board: health every 2 s (Wi-Fi link, routes, CPU, memory), new journal / dmesg " +
+            "warnings, network-safety and the vendor basic_server log (AOS), dumps when something looks wrong, and M20 " +
+            "Ctrl's own log lines (read-only: journalctl -f, tail -F and a 2 s loop over ssh)",
+        keys: [],
+        default: { on: true, maxHz: null },
+        fullRate: "every 2 s, small",
     },
 ]
 

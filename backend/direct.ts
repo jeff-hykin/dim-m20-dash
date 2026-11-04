@@ -235,7 +235,7 @@ export class Direct {
      * mode and the Basic gait), dock, undock (leave the dock, then stand). It checks the robot reports each step. */
     runCli(action: "stand" | "direct" | "dock" | "undock", dryRun = false) {
         const cli = this.cli()
-        const plan = [`${cli} ${action}${dryRun ? " --dry-run" : ""}`]
+        const plan = [`${cli} ${action}`]
         if (this.robot.state.source === "fake") {
             // the simulated robot: what `m20 stand` / `m20 dock` would end in
             return this.#run(`m20 ${action}`, dryRun, plan, async () => {

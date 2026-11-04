@@ -7,6 +7,8 @@
 //   /robot_action           every motion request (standup, liedown, stop) and what the blueprint answered
 //   /logs                   everything else as typed JSON: recording start/stop, mode changes, blueprint start/stop
 //   /robot/{basic,motion,devices,errors}  basic_server's status reports, as they come
+//   /logs also carries the system logs (syslogs.ts: health, journal, network-safety, basic_server log, health dumps)
+//   and M20 Ctrl's own log lines ({"type":"app_log"}) when the options' "System logs" is on
 // and the live topics the Record options pick, raw as they are on zenoh (dimos' mcap layout: one channel per stream
 // named like it, "lcm" as the encoding, dimos.* metadata), through zenoh_tap.py (tap.ts), each with its own rate cap.
 // The options (record_streams.ts) also pick the JSON groups, a label for the file name, a folder inside m20/, and
@@ -63,6 +65,13 @@ type Active = {
 }
 
 let active: Active | null = null
+
+/** told when a recording starts (with its options) and stops: app.ts starts and stops the system logs */
+const listeners = new Set<(options: RecordOptions | null) => void>()
+export function onRecording(listener: (options: RecordOptions | null) => void) {
+    listeners.add(listener)
+    return () => void listeners.delete(listener)
+}
 
 export function recording(): boolean {
     return active !== null
@@ -277,6 +286,7 @@ export function startRecording(root = recordingsDir(), context: Json = {}, optio
             g.keys.map((key) => ({ key, maxHz: options.streams[g.id].maxHz }))
         ),
     )
+    listeners.forEach((listener) => listener(options))
     if (tap.state.state === "unavailable") {
         logLine(`recording: no live topics: ${tap.state.error}`)
         recordLog({ type: "live_topics_unavailable", why: tap.state.error })
@@ -291,6 +301,7 @@ export function stopRecording() {
     }
     recordLog({ type: "recording_stopped", streams: recordingStatus().streams })
     tap.stop()
+    listeners.forEach((listener) => listener(null))
     active = null
     ending.writer.close()
     logLine(
