@@ -71,9 +71,10 @@ provides:
     /api/mode:
       put:
         description: >-
-          blueprint: M20 Ctrl watches and records the running dimos blueprint's streams and sends motion through its
-          M20Connection RPCs (never its own robot connection). direct: boards only; motion is not available. Returns
-          {mode}
+          blueprint: M20 Ctrl drives and commands the robot through the running dimos blueprint (tele_cmd_vel and
+          M20Connection's RPCs; the robot must be in navigation control mode). direct: through the robot's own
+          basic_server (axis commands; regular control mode). While a blueprint runs, blueprint mode is the default:
+          direct chosen now holds until the next run starts. Returns {mode}
         x-when: you need to switch between blueprint mode and direct mode
         requestBody:
           content:
@@ -89,11 +90,12 @@ provides:
     /api/motion:
       post:
         description: >-
-          MOVES THE ROBOT. action: standup, liedown, dock, stop — the running blueprint's M20Connection standup /
-          liedown / dock / stop_movement RPC through the dimos gateway. dock starts self-charging (the robot must stand
-          still about 2 m in front of the dock, facing it) and answers at once with what it's doing. Blueprint mode only
-          (501 in direct mode); 409 when no blueprint with M20Connection runs or its M20Connection lacks that RPC.
-          Returns {ok, rpc, module, result, error}
+          MOVES THE ROBOT. action: standup, liedown, dock, stop. Blueprint mode: the running blueprint's M20Connection
+          standup / liedown / dock / stop_movement RPC through the dimos gateway (409 when no blueprint with
+          M20Connection runs or it lacks that RPC). Direct mode: the robot's basic_server: standup = regular control
+          mode, stand, RL control; liedown = zero axes, sit; dock = `m20 dock`; stop = zero axes. dock starts
+          self-charging (the robot must stand still about 2 m in front of the dock, facing it). Returns {ok, result,
+          error} (or {dryRun, wouldCall|wouldDo})
         x-when: 'the M20 should stand up, lie down, dock to charge or stop'
         requestBody:
           content:
@@ -109,11 +111,59 @@ provides:
                     description: 'validate and return what would be called, without calling it'
                 required:
                   - action
+    /api/drive/enable:
+      post:
+        description: >-
+          MOVES THE ROBOT (it stands up). Puts the robot in the state the current mode drives in. Blueprint mode: `m20
+          stand` (navigation control mode, stand, RL control, gait; refuses on the dock). Direct mode: regular control
+          mode, stand, RL control. Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)
+        x-when: the M20 won't drive (GET api/state's driving says why) and should be made ready to
+        requestBody:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dryRun:
+                    type: boolean
+                    description: 'say what it would do, without doing it'
+    /api/direct/move:
+      post:
+        description: >-
+          MOVES THE ROBOT. Direct mode only: axis commands to the robot's basic_server at 20 Hz for durationMs (at most
+          500), then zeros. x forward, y left, yaw counterclockwise, each -1..1 (a share of the robot's top speed). 409
+          when the robot can't drive now (GET api/state's driving says why)
+        x-when: the M20 should move in direct mode (hold it by calling again within durationMs)
+        requestBody:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  x:
+                    type: number
+                    description: 'forward (+) / back, -1..1'
+                  'y':
+                    type: number
+                    description: 'left (+) / right, -1..1'
+                  yaw:
+                    type: number
+                    description: 'turn left (+) / right, -1..1'
+                  durationMs:
+                    type: number
+                    description: how long it holds without another call (≤ 500)
+                required:
+                  - x
+    /api/direct/stop:
+      post:
+        summary: 'Zero axis commands now (and for half a second after). Any mode; returns {moving: false}'
+        x-when: the M20 should stop moving in direct mode
     /api/blueprint:
       get:
         description: >-
           Blueprint mode's view: {running, blueprint, runId, error, streams [{name, type, direction, module}],
-          connection {id, rpcs} (its M20Connection), peeked {stream: {type, value, ts, at}}}; 409 in direct mode
+          connection {id, rpcs} (its M20Connection), peeked {stream: {type, value, ts, at}}} (its streams are sampled in
+          blueprint mode only)
         x-when: 'you want the running dimos blueprint''s streams and their latest values, as M20 Ctrl sees them'
     /api/settings:
       get:

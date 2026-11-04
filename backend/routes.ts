@@ -1,7 +1,8 @@
 // Every M20 Ctrl action, as an endpoint (http.ts). The page calls only these, and so can Desktop's agent. Motion takes
 // `dryRun: true`, which validates and answers with what would be called without calling it.
 import { logLine } from "./applog.ts"
-import { applySettings, blueprint, boards, robot } from "./app.ts"
+import { applySettings, blueprint, boards, direct, directChosen, robot } from "./app.ts"
+import { MOVE_HOLD_MAX_MS, readiness } from "./direct.ts"
 import { MOTIONS } from "./blueprint.ts"
 import { fakeBoards } from "./boards.ts"
 import { HttpError, type Info, type Route } from "./http.ts"
@@ -25,10 +26,9 @@ export const INFO: Info = {
         "network, lidar and dimos — record them, and in blueprint mode watch, record and command the running dimos blueprint",
 }
 
-/** what direct mode says when asked to move: there is no direct M20 protocol here (on purpose: it isn't documented) */
+/** what direct mode is, for the page and the agent */
 export const DIRECT_MOTION =
-    "Direct mode has no motion: M20 Ctrl doesn't speak the M20's own control protocol (it isn't documented here). " +
-    "Switch to blueprint mode and run a blueprint with M20Connection (m20-nav, or deeprobotics-m20-kronknav-control before the rename)."
+    "Direct mode drives through the robot's own basic_server (axis commands, regular control mode), not the blueprint."
 
 function bool(value: unknown, name: string): boolean {
     if (value === undefined) {
@@ -49,12 +49,34 @@ function state(withHistory: boolean) {
         mode: settings().mode,
         source: settings().source,
         boards: boards.summary(now).map((board) => withHistory ? board : { ...board, history: undefined }),
-        blueprint: settings().mode === "blueprint" ? blueprint.state : null,
+        blueprint: blueprint.state,
         directMotion: settings().mode === "direct" ? DIRECT_MOTION : null,
+        driving: readiness(robot, settings().mode),
+        direct: direct.status,
         record: recordingStatus(),
         robot: robot.state,
         now,
     }
+}
+
+/** Direct mode's stand up / lie down / dock / stop, through basic_server. */
+async function directMotion(action: string, dryRun: boolean) {
+    if (action === "standup") {
+        return await direct.standForDirect(dryRun)
+    }
+    if (action === "liedown") {
+        return await direct.lieDown(dryRun)
+    }
+    if (action === "dock") {
+        return await direct.runCli("dock", dryRun)
+    }
+    if (action === "stop") {
+        if (!dryRun) {
+            direct.stop()
+        }
+        return dryRun ? { dryRun: true, wouldDo: ["zero axes"] } : { ok: true, result: "zero axes" }
+    }
+    throw new HttpError(400, `action must be one of: ${Object.keys(MOTIONS).join(", ")}`)
 }
 
 export const routes: Route[] = [
@@ -107,12 +129,18 @@ export const routes: Route[] = [
         path: "api/mode",
         when: "you need to switch between blueprint mode and direct mode",
         description:
-            "blueprint: M20 Ctrl watches and records the running dimos blueprint's streams and sends motion through its " +
-            "M20Connection RPCs (never its own robot connection). direct: boards only; motion is not available. " +
-            "Returns {mode}",
+            "blueprint: M20 Ctrl drives and commands the robot through the running dimos blueprint (tele_cmd_vel and " +
+            "M20Connection's RPCs; the robot must be in navigation control mode). direct: through the robot's own " +
+            "basic_server (axis commands; regular control mode). While a blueprint runs, blueprint mode is the " +
+            "default: direct chosen now holds until the next run starts. Returns {mode}",
         params: { mode: { type: "string", description: "blueprint or direct", required: true } },
-        handler: ({ mode }) => {
+        handler: ({ mode }, request) => {
             const next = updateSettings({ mode: mode as Mode })
+            if (next.mode === "direct") {
+                directChosen()
+            }
+            // who switched it (a page or an agent), for the next time it's a surprise
+            logLine(`mode → ${next.mode} (asked by ${request.headers.get("user-agent")?.slice(0, 80) ?? "?"})`)
             applySettings(next)
             return { mode: next.mode }
         },
@@ -122,21 +150,21 @@ export const routes: Route[] = [
         path: "api/motion",
         when: "the M20 should stand up, lie down, dock to charge or stop",
         description:
-            `MOVES THE ROBOT. action: ${Object.keys(MOTIONS).join(", ")} — the running blueprint's M20Connection ` +
-            "standup / liedown / dock / stop_movement RPC through the dimos gateway. dock starts self-charging (the " +
-            "robot must stand still about 2 m in front of the dock, facing it) and answers at once with what it's " +
-            "doing. Blueprint mode only (501 in direct mode); 409 when no blueprint with M20Connection runs or its " +
-            "M20Connection lacks that RPC. Returns {ok, rpc, module, result, error}",
+            `MOVES THE ROBOT. action: ${Object.keys(MOTIONS).join(", ")}. Blueprint mode: the running blueprint's ` +
+            "M20Connection standup / liedown / dock / stop_movement RPC through the dimos gateway (409 when no " +
+            "blueprint with M20Connection runs or it lacks that RPC). Direct mode: the robot's basic_server: standup = " +
+            "regular control mode, stand, RL control; liedown = zero axes, sit; dock = `m20 dock`; stop = zero axes. " +
+            "dock starts self-charging (the robot must stand still about 2 m in front of the dock, facing it). " +
+            "Returns {ok, result, error} (or {dryRun, wouldCall|wouldDo})",
         params: {
             action: { type: "string", description: "standup, liedown, dock or stop", required: true },
             dryRun: { type: "boolean", description: "validate and return what would be called, without calling it" },
         },
         handler: async ({ action, dryRun }) => {
-            if (settings().mode !== "blueprint") {
-                throw new HttpError(501, DIRECT_MOTION)
-            }
             const dry = bool(dryRun, "dryRun")
-            const result = await blueprint.motion(String(action ?? ""), dry)
+            const result = settings().mode === "direct"
+                ? await directMotion(String(action ?? ""), dry)
+                : await blueprint.motion(String(action ?? ""), dry)
             if (!dry) {
                 logLine(`motion ${action}: ${JSON.stringify(result)}`)
                 record("/robot_action", { action, ...result })
@@ -145,18 +173,67 @@ export const routes: Route[] = [
         },
     },
     {
+        method: "POST",
+        path: "api/drive/enable",
+        when: "the M20 won't drive (GET api/state's driving says why) and should be made ready to",
+        description:
+            "MOVES THE ROBOT (it stands up). Puts the robot in the state the current mode drives in. Blueprint mode: " +
+            "`m20 stand` (navigation control mode, stand, RL control, gait; refuses on the dock). Direct mode: " +
+            "regular control mode, stand, RL control. Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)",
+        params: { dryRun: { type: "boolean", description: "say what it would do, without doing it" } },
+        handler: async ({ dryRun }) => {
+            const dry = bool(dryRun, "dryRun")
+            const result = settings().mode === "direct"
+                ? await direct.standForDirect(dry)
+                : await direct.runCli("stand", dry)
+            if (!dry) {
+                record("/robot_action", { action: "enable_driving", mode: settings().mode, ...result })
+            }
+            return result
+        },
+    },
+    {
+        method: "POST",
+        path: "api/direct/move",
+        when: "the M20 should move in direct mode (hold it by calling again within durationMs)",
+        description:
+            "MOVES THE ROBOT. Direct mode only: axis commands to the robot's basic_server at 20 Hz for durationMs " +
+            `(at most ${MOVE_HOLD_MAX_MS}), then zeros. x forward, y left, yaw counterclockwise, each -1..1 (a share of ` +
+            "the robot's top speed). 409 when the robot can't drive now (GET api/state's driving says why)",
+        params: {
+            x: { type: "number", description: "forward (+) / back, -1..1", required: true },
+            y: { type: "number", description: "left (+) / right, -1..1" },
+            yaw: { type: "number", description: "turn left (+) / right, -1..1" },
+            durationMs: {
+                type: "number",
+                description: `how long it holds without another call (≤ ${MOVE_HOLD_MAX_MS})`,
+            },
+        },
+        handler: ({ x, y, yaw, durationMs }) => {
+            if (settings().mode !== "direct") {
+                throw new HttpError(409, "blueprint mode: the blueprint drives (switch to direct mode, PUT api/mode)")
+            }
+            return direct.move(Number(x), Number(y ?? 0), Number(yaw ?? 0), Number(durationMs ?? 300))
+        },
+    },
+    {
+        method: "POST",
+        path: "api/direct/stop",
+        when: "the M20 should stop moving in direct mode",
+        description: "Zero axis commands now (and for half a second after). Any mode; returns {moving: false}",
+        handler: () => {
+            direct.stop()
+            return direct.status
+        },
+    },
+    {
         method: "GET",
         path: "api/blueprint",
         when: "you want the running dimos blueprint's streams and their latest values, as M20 Ctrl sees them",
         description:
             "Blueprint mode's view: {running, blueprint, runId, error, streams [{name, type, direction, module}], " +
-            "connection {id, rpcs} (its M20Connection), peeked {stream: {type, value, ts, at}}}; 409 in direct mode",
-        handler: () => {
-            if (settings().mode !== "blueprint") {
-                throw new HttpError(409, "direct mode: switch to blueprint mode (PUT api/mode)")
-            }
-            return blueprint.state
-        },
+            "connection {id, rpcs} (its M20Connection), peeked {stream: {type, value, ts, at}}} (its streams are sampled in blueprint mode only)",
+        handler: () => blueprint.state,
     },
     {
         method: "GET",

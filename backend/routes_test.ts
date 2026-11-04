@@ -109,13 +109,36 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         await until(async () => (await call("GET", "api/boards/gos")).json.indicators.network.level === "bad")
         await call("PUT", "api/fake", { board: "gos", clear: true })
 
-        // direct mode: no blueprint, no motion (and nothing reaches the gateway)
+        // direct mode: through the (simulated) robot's basic_server, nothing to the gateway. The simulated robot
+        // starts sitting in regular mode: driving is refused (and says why) until Enable driving stands it up
         assertEquals((await call("PUT", "api/mode", { mode: "direct" })).json.mode, "direct")
-        const refused = await call("POST", "api/motion", { action: "standup" })
-        assertEquals(refused.status, 501)
-        assertMatch(refused.json.error, /Direct mode has no motion/)
-        assertEquals((await call("GET", "api/blueprint")).status, 409)
+        await until(async () => (await call("GET", "api/state")).json.robot.link === "up")
+        const sitting = (await call("GET", "api/state")).json.driving
+        assertEquals([sitting.ok, sitting.fixable], [false, true])
+        assertMatch(sitting.reason, /sitting, not standing/)
+        assertEquals((await call("POST", "api/direct/move", { x: 0.5, durationMs: 300 })).status, 409)
+        const enableDry = await call("POST", "api/drive/enable", { dryRun: true })
+        assertMatch(enableDry.json.wouldDo.join(" "), /regular/)
+        assertEquals((await call("POST", "api/drive/enable")).json.ok, true)
+        assertEquals((await call("GET", "api/state")).json.driving.ok, true)
+        assertEquals((await call("POST", "api/direct/move", { x: 2 })).status, 400, "axes are -1..1")
+        assertEquals((await call("POST", "api/direct/move", { x: 0.5, yaw: -0.2, durationMs: 300 })).json.moving, true)
+        await until(async () => (await call("GET", "api/robot")).json.motion.vx === 0.5)
+        // the move lapses on its own (the deadman), zeros follow
+        await until(async () => (await call("GET", "api/robot")).json.motion.vx === 0)
+        assertEquals((await call("GET", "api/blueprint")).status, 200)
         assertEquals(gateway.calls.length, 2)
+
+        // blueprint mode: regular control mode won't follow the blueprint; Enable driving runs (simulated) m20 stand
+        await call("PUT", "api/mode", { mode: "blueprint" })
+        assertMatch((await call("GET", "api/state")).json.driving.reason, /regular control mode/)
+        assertEquals(
+            (await call("POST", "api/direct/move", { x: 0.5 })).status,
+            409,
+            "direct moves only in direct mode",
+        )
+        assertEquals((await call("POST", "api/drive/enable")).json.ok, true)
+        await until(async () => (await call("GET", "api/state")).json.driving.ok === true)
         assertEquals((await call("PUT", "api/mode", { mode: "sideways" })).status, 400)
 
         // blueprint mode with no blueprint running: motion is refused, not sent
@@ -139,7 +162,7 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
 })
 
 Deno.test(
-    "dock: blueprint mode only, through M20Connection's dock RPC, refused when it has none",
+    "dock: through M20Connection's dock RPC in blueprint mode (refused when it has none), `m20 dock` in direct mode",
     options,
     async () => {
         const dir = Deno.makeTempDirSync()
@@ -182,10 +205,11 @@ Deno.test(
             assertEquals(old.status, 409)
             assertMatch(old.json.error, /no dock RPC.*self-charging/)
 
-            // direct mode: no dock either
+            // direct mode docks through `m20 dock` (simulated here), not the gateway
             await call("PUT", "api/mode", { mode: "direct" })
-            assertEquals((await call("POST", "api/motion", { action: "dock" })).status, 501)
+            assertEquals((await call("POST", "api/motion", { action: "dock" })).json.ok, true)
             assertEquals(gateway.calls.length, 3)
+            await until(async () => /dock|charging/.test((await call("GET", "api/state")).json.driving.reason ?? ""))
         } finally {
             stopApp()
             await gateway.server.shutdown()

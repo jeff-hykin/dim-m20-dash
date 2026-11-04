@@ -11,8 +11,10 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
     fake), a TCP probe of port 22, the indicators. `fake.ts`: simulated boards whose state changes over time.
   - `blueprint.ts`: blueprint mode (GET active, active/streams, peek, active/modules; motion = M20Connection's RPCs).
   - `robot.ts`: the M20's own status (motion, gait, charging, e-stop, batteries, joint temperatures, errors) from AOS's
-    basic_server reports (UDP 10.21.31.103:30000). It sends only the heartbeat (Type 100/100), never a command; keep
-    it that way (`robot_test.ts` checks). Needs `--unstable-net`.
+    basic_server reports (UDP 10.21.31.103:30000). On its own it sends only the heartbeat (`robot_test.ts` checks);
+    commands go through its command() / usageMode() from `direct.ts` only. Needs `--unstable-net`. With the fake boards
+    it simulates the robot (starts sitting, regular control mode).
+  - `direct.ts`: driving readiness per mode, Enable driving, and direct mode's axis-command loop and stand/lie down.
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl), with the Record options of
     `record_streams.ts` (stream groups, rate caps, label, folder, splitting). The live topics come raw through
     `zenoh_tap.py`, which `tap.ts` runs with DIMOS_APP's `dimosPython` against its `zenohConnect` (subscribe only). `settings.ts`: `<dataDir>/settings.json`.
@@ -38,8 +40,12 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
 
 ## Rules
 
-- Motion only from a request (a click, a held key/stick, an agent call), only through the blueprint. Stand up / lie
-  down / dock always ask first; driving publishes only while an input is held, with the gateway's deadman armed. Direct mode has no motion: the
-  M20's own control protocol isn't implemented here, and none should be guessed.
+- Motion only from a request (a click, a held key/stick, an agent call). Stand up / lie down / dock / Enable driving
+  always ask first; driving sends only while an input is held, with a deadman (the gateway's in blueprint mode,
+  `direct.ts`'s move hold in direct mode).
+- Two ways to drive (`direct.ts` has the details): blueprint mode publishes tele_cmd_vel for the running blueprint (the
+  robot must be in navigation control mode, RL control); direct mode sends the vendor's axis commands to basic_server
+  (regular control mode, standing). `readiness()` says what's in the way; Enable driving (POST api/drive/enable) fixes
+  it (`m20 stand` in blueprint mode). Blueprint mode is the default whenever a blueprint run starts.
 - On a robot don't build there (no `nix build`, `deno install`): cross build, rsync, hot-load
   ([edge compute](https://github.com/jeff-hykin/dimos-desktop-mirror/blob/main/docs/create-apps/edge-compute.md)).

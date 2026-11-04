@@ -2,8 +2,9 @@
 // heartbeats: BasicStatus (1002/6: motion state, gait, charging, hard e-stop, usage mode, sleep), MotionStatus (1002/4,
 // 10 Hz: attitude, height, speed), the device report (1002/5: both battery packs, every joint motor's and driver's
 // temperature) and ErrorList (1002/3). This is the read-only half of what the `m20` CLI does: the ONLY frame ever sent
-// is the heartbeat (Type 100, Command 100) every 0.5 s; never a command (heartbeatFrame() is the one frame builder, and
-// robot_test.ts checks it). basic_server reports to several clients at once, so a running m20-nav keeps its own.
+// is the heartbeat (Type 100, Command 100) every 0.5 s. Commands go out only through command() / usageMode(), which
+// only direct.ts calls, and only from a request (a click, a held drive input): Robot itself never sends one
+// (robot_test.ts checks). basic_server reports to several clients at once, so a running m20-nav keeps its own.
 // With the fake boards a simulated robot fills the same state (motors that warm while it "walks").
 // Needs Deno's --unstable-net (UDP); without it the state says why.
 import { logLine } from "./applog.ts"
@@ -11,6 +12,8 @@ import { logLine } from "./applog.ts"
 const HEADER_SIZE = 16
 const MAGIC = [0xeb, 0x91, 0xeb, 0x90]
 const HEARTBEAT_MS = 500
+/** basic_server's TCP port (the usage mode switch answers there) */
+const TCP_PORT = 30001
 /** no report for this long: the link is down */
 const STALE_MS = 3000
 
@@ -118,6 +121,8 @@ export type RobotState = {
         chargeName: string
         hardEstop: boolean
         usage: string
+        /** 0 regular (axis commands), 1 navigation (the blueprint's velocity), 2 assist */
+        usageMode: number
         sleep: string
         singleBattery: boolean
         version: string | null
@@ -238,6 +243,7 @@ export function applyReport(
             chargeName: CHARGE[charge] ?? `unknown (${charge})`,
             hardEstop: !!b.HES,
             usage: USAGE[num(b.ControlUsageMode, -1)] ?? String(b.ControlUsageMode),
+            usageMode: num(b.ControlUsageMode, -1),
             sleep: SLEEP[num(b.Sleep, -1)] ?? String(b.Sleep),
             singleBattery: num(b.PowerManagement) === 1,
             version: typeof b.Version === "string" ? b.Version : null,
@@ -301,8 +307,47 @@ const empty = (host: string, source: "udp" | "fake"): RobotState => ({
     errors: [],
 })
 
+/** A command frame (Type/Command/Items), the shape basic_server takes on UDP 30000 and TCP 30001. */
+export function commandFrame(
+    type: number,
+    command: number,
+    items: Record<string, unknown>,
+    messageId: number,
+): Uint8Array {
+    const frame = heartbeatFrame(messageId)
+    const payload = new TextEncoder().encode(
+        JSON.stringify({
+            PatrolDevice: {
+                Type: type,
+                Command: command,
+                Time: JSON.parse(new TextDecoder().decode(frame.subarray(HEADER_SIZE))).PatrolDevice.Time,
+                Items: items,
+            },
+        }),
+    )
+    const out = new Uint8Array(HEADER_SIZE + payload.length)
+    out.set(frame.subarray(0, HEADER_SIZE))
+    new DataView(out.buffer).setUint16(4, payload.length, true)
+    out.set(payload, HEADER_SIZE)
+    return out
+}
+
+/** The simulated robot's state (the fake boards' mode): what direct.ts's commands change. */
+export type FakeRobot = {
+    motion: number
+    usage: number
+    gait: number
+    charge: number
+    hardEstop: boolean
+    axes: number[]
+}
+
 export class Robot {
     state: RobotState = empty("", "udp")
+    /** the simulated robot, with the fake boards */
+    fake: FakeRobot | null = null
+    #host = ""
+    #port = 0
     #socket: Deno.DatagramConn | null = null
     #timers: number[] = []
     #messageId = Math.floor(Math.random() * 0x10000)
@@ -315,6 +360,9 @@ export class Robot {
     start(host: string, port: number, fake: boolean) {
         this.stop()
         this.state = empty(fake ? "simulated" : `${host}:${port}`, fake ? "fake" : "udp")
+        this.#host = host
+        this.#port = port
+        this.fake = null
         if (fake) {
             this.#startFake()
             return
@@ -365,7 +413,64 @@ export class Robot {
         logLine(`robot: heartbeating ${host}:${port} for basic_server's status reports (heartbeats only, no commands)`)
     }
 
+    /** One UDP command to basic_server (direct.ts only, from a request). With the fake boards it moves the simulation. */
+    async command(type: number, command: number, items: Record<string, unknown>) {
+        if (this.fake) {
+            simulate(this.fake, type, command, items)
+            return
+        }
+        if (!this.#socket) {
+            throw new Error(this.state.error ?? "no UDP socket to basic_server")
+        }
+        this.#messageId = (this.#messageId + 1) & 0xffff
+        await this.#socket.send(commandFrame(type, command, items, this.#messageId), {
+            transport: "udp",
+            hostname: this.#host,
+            port: this.#port,
+        })
+    }
+
+    /** The usage mode switch (1101/5 over TCP 30001): its ErrorCode (0 = done). direct.ts only, from a request. */
+    async usageMode(mode: number): Promise<number> {
+        if (this.fake) {
+            simulate(this.fake, 1101, 5, { Mode: mode })
+            return 0
+        }
+        this.#messageId = (this.#messageId + 1) & 0xffff
+        const id = this.#messageId
+        const connection = await Deno.connect({ hostname: this.#host, port: TCP_PORT })
+        try {
+            const timer = setTimeout(() => connection.close(), 3000)
+            await connection.write(commandFrame(1101, 5, { Mode: mode }, id))
+            const read = async (size: number) => {
+                const out = new Uint8Array(size)
+                let at = 0
+                while (at < size) {
+                    const n = await connection.read(out.subarray(at))
+                    if (n === null) {
+                        throw new Error("basic_server closed the connection")
+                    }
+                    at += n
+                }
+                return out
+            }
+            const header = await read(HEADER_SIZE)
+            const length = new DataView(header.buffer).getUint16(4, true)
+            const reply = parseReport(new Uint8Array([...header, ...(await read(length))]))
+            clearTimeout(timer)
+            return num((reply?.items as Record<string, unknown> | undefined)?.ErrorCode, -1)
+        } finally {
+            try {
+                connection.close()
+            } catch {
+                // closed by the timer
+            }
+        }
+    }
+
     #startFake() {
+        const fake: FakeRobot = { motion: 4, usage: 0, gait: 0x1001, charge: 0, hardEstop: false, axes: [0, 0, 0] }
+        this.fake = fake
         const started = Date.now()
         const tick = () => {
             const t = (Date.now() - started) / 1000
@@ -374,11 +479,11 @@ export class Robot {
                 if (command === 6) {
                     return {
                         BasicStatus: {
-                            MotionState: 1,
-                            Gait: 0x3002,
-                            Charge: 0,
-                            HES: 0,
-                            ControlUsageMode: 1,
+                            MotionState: fake.motion,
+                            Gait: fake.gait,
+                            Charge: fake.charge,
+                            HES: fake.hardEstop ? 1 : 0,
+                            ControlUsageMode: fake.usage,
                             Sleep: 0,
                             PowerManagement: 0,
                             Version: "PRO",
@@ -392,9 +497,9 @@ export class Robot {
                             Pitch: -0.02,
                             Yaw: (t / 10) % Math.PI,
                             Height: 0.42,
-                            LinearX: 0,
-                            LinearY: 0,
-                            OmegaZ: 0,
+                            LinearX: fake.axes[0],
+                            LinearY: fake.axes[1],
+                            OmegaZ: fake.axes[2],
                             RemainMile: 6.6,
                         },
                     }
@@ -431,7 +536,7 @@ export class Robot {
             }
         }
         tick()
-        this.#timers.push(setInterval(tick, 1000))
+        this.#timers.push(setInterval(tick, 250))
     }
 
     stop() {
@@ -444,5 +549,23 @@ export class Robot {
         }
         this.#socket = null
         this.state.link = "off"
+    }
+}
+
+/** What a command does to the simulated robot (as basic_server would: axis commands only in regular mode, standing). */
+function simulate(fake: FakeRobot, type: number, command: number, items: Record<string, unknown>) {
+    if (type === 1101 && command === 5) {
+        fake.usage = num(items.Mode, fake.usage)
+    } else if (type === 2 && command === 22) {
+        const want = num(items.MotionParam, fake.motion)
+        // RL control only from a stand (the transition diagram)
+        if (want !== 17 || fake.motion === 1 || fake.motion === 17) {
+            setTimeout(() => (fake.motion = want), 600)
+        }
+    } else if (type === 2 && command === 23) {
+        fake.gait = num(items.GaitParam, fake.gait)
+    } else if (type === 2 && command === 21) {
+        const moving = fake.usage === 0 && (fake.motion === 1 || fake.motion === 17)
+        fake.axes = moving ? [num(items.X), num(items.Y), num(items.Yaw)] : [0, 0, 0]
     }
 }
