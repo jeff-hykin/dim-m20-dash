@@ -49,7 +49,7 @@ const DPAD: { key: keyof typeof KEY_AXES; cls: string; icon: string; help: strin
 ]
 
 type Motion = {
-    action: "standup" | "liedown" | "dock" | "enable" | "direct"
+    action: "standup" | "liedown" | "dock" | "enable" | "direct" | "gait"
     label: string
     rpc: string
     tone: string
@@ -80,6 +80,17 @@ const DIRECT_SWITCH: Motion = {
         "so the blueprint's navigation stops moving the robot. When the next blueprint run starts, M20 Ctrl goes back " +
         "to blueprint mode.",
 }
+/** the gaits (the vendor guide's, and 0x3004 seen live), short names, and which mode each suits */
+const GAITS: { code: number; name: string; short: string; suits: string }[] = [
+    { code: 0x1001, name: "basic", short: "Basic", suits: "direct mode (its Enable driving default)" },
+    { code: 0x1002, name: "high obstacles", short: "High obstacles", suits: "direct mode, rough ground" },
+    { code: 0x1003, name: "stairs (standard)", short: "Stairs", suits: "direct mode, stairs" },
+    { code: 0x3002, name: "flat (agile)", short: "Flat (agile)", suits: "blueprint/nav, flat ground" },
+    { code: 0x3003, name: "stairs (agile)", short: "Stairs (agile)", suits: "blueprint/nav (its default)" },
+    { code: 0x3004, name: "off-road (agile)", short: "Off-road (agile)", suits: "blueprint/nav; undocumented" },
+]
+const gaitShort = (code: number | undefined, name?: string) => GAITS.find((g) => g.code === code)?.short ?? name ?? "?"
+
 const MOTIONS: Motion[] = [
     {
         action: "standup",
@@ -699,10 +710,59 @@ export function App() {
         }
         return null
     }
+    const [gaitBusy, setGaitBusy] = useState<number | null>(null)
+    /** Changes the gait (POST api/gait, confirmed by the robot's report); asks first while the robot moves. */
+    const changeGait = async (code: number, ask: boolean) => {
+        const target = GAITS.find((g) => g.code === code)
+        if (!target) {
+            return
+        }
+        const m = state?.robot.motion
+        const movingNow = drive.current.status.moving ||
+            (!!m && (Math.abs(m.vx) > 0.05 || Math.abs(m.vy) > 0.05 || Math.abs(m.wz) > 0.05))
+        if (ask && movingNow) {
+            setConfirm({
+                action: "gait",
+                label: `Gait: ${target.short}`,
+                rpc: String(code),
+                tone: "warn",
+                title: "",
+                warn:
+                    `The robot is <b>moving</b>. Changing its gait now changes how it walks mid-stride. Suits: ${target.suits}.`,
+            })
+            return
+        }
+        setGaitBusy(code)
+        try {
+            const result = await call<
+                { ok?: boolean; result?: string; error?: string; dryRun?: boolean; wouldDo?: string[] }
+            >(
+                "POST",
+                "api/gait",
+                { gait: code, dryRun },
+            )
+            showToast(
+                result.dryRun
+                    ? `Dry run: would ${result.wouldDo?.join(", ")}`
+                    : result.ok
+                    ? `Gait: ${target.short} (confirmed by the robot)`
+                    : `Gait ${target.short} failed: ${result.error}`,
+            )
+        } catch (error) {
+            showToast(`Gait: ${message(error)}`)
+        } finally {
+            setGaitBusy(null)
+            refresh()
+        }
+    }
     const runMotion = async (m: Motion) => {
         if (m.action === "direct") {
             await call("PUT", "api/mode", { mode: "direct" }).catch((e) => showToast(message(e)))
             refresh()
+            return
+        }
+        if (m.action === "gait") {
+            await changeGait(Number(m.rpc), false)
             return
         }
         setBusy(m.action)
@@ -1135,6 +1195,17 @@ export function App() {
                         {robot.basic.usage === "navigation"
                             ? "Nav mode"
                             : `${robot.basic.usage[0].toUpperCase()}${robot.basic.usage.slice(1)} mode`}
+                    </span>
+                )}
+                {robotUp && robot?.basic && (
+                    <span
+                        className="dim-badge pill gait-badge"
+                        data-ui="gait.current"
+                        title={`the robot's gait: ${robot.basic.gaitName} (suits ${
+                            GAITS.find((g) => g.code === robot.basic!.gait)?.suits ?? "?"
+                        })`}
+                    >
+                        {gaitShort(robot.basic.gait, robot.basic.gaitName)}
                     </span>
                 )}
                 {hotMotor && (
@@ -1634,8 +1705,31 @@ export function App() {
                         }`}
                         title="the M20's motion state and gait (its own status report)"
                     >
-                        {robot.basic.motionName} · {robot.basic.gaitName}
+                        {robot.basic.motionName}
                     </span>
+                )}
+                {robotUp && robot?.basic && (
+                    <label className="gait-pick" title="the robot's gait (confirmed by its own report)">
+                        <span className="hide-phone">Gait</span>
+                        <select
+                            className="dim-select"
+                            data-ui="gait.pick"
+                            value={gaitBusy ?? robot.basic.gait}
+                            disabled={gaitBusy !== null}
+                            onChange={(e) =>
+                                changeGait(Number(e.target.value), true)}
+                        >
+                            {!GAITS.some((g) =>
+                                g.code === robot.basic!.gait
+                            ) && <option value={robot.basic.gait}>{robot.basic.gaitName}</option>}
+                            {GAITS.map((g) => (
+                                <option key={g.code} value={g.code}>
+                                    {g.short} — {g.suits}
+                                </option>
+                            ))}
+                        </select>
+                        {gaitBusy !== null && <span className="muted">…</span>}
+                    </label>
                 )}
                 {MOTIONS.map((m) => {
                     const blocked = motionBlocked(m)
