@@ -553,6 +553,7 @@ function wifiSteps(dog: Dog, ssid: string, password: string): Step[] {
 
 function gosUplinkSteps(dog: Dog): Step[] {
     let aosWlanOnline = false
+    const wlanOnline = async () => !(await boardStep(dog.aos, "aos/wlan-online", "check", {})).todos.length
     const uplink = boardStepOf(
         dog.gos,
         "gos/aos-uplink",
@@ -560,12 +561,19 @@ function gosUplinkSteps(dog: Dog): Step[] {
         () => ({ aosWlanOnline }),
         {
             before: async () => {
-                aosWlanOnline = !(await boardStep(dog.aos, "aos/wlan-online", "check", {})).todos.length
+                aosWlanOnline = await wlanOnline()
             },
         },
     )
     return [
-        uplink,
+        {
+            ...uplink,
+            // the plan needs it too: whether AOS has internet over wlan0 decides what the step does
+            check: async () => {
+                aosWlanOnline = await wlanOnline()
+                return await uplink.check()
+            },
+        },
         boardStepOf(
             dog.aos,
             "aos/drop-route",
