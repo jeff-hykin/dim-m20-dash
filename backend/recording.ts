@@ -121,6 +121,44 @@ const tap = new Tap((key, timeNs, payload) => {
     }
 })
 
+/** a recording stops itself when its disk gets down to this (bytes free) */
+const MIN_FREE_BYTES = 1e9
+const DISK_CHECK_MS = 5000
+let freeBytes: number | null = null
+
+/** Free space on `dir`'s disk (df -Pk), or null when df can't say. */
+async function diskFree(dir: string): Promise<number | null> {
+    try {
+        const { stdout, success } = await new Deno.Command("df", {
+            args: ["-Pk", dir],
+            stdout: "piped",
+            stderr: "null",
+        }).output()
+        const fields = new TextDecoder().decode(stdout).trim().split("\n").pop()?.split(/\s+/) ?? []
+        return success && fields[3] ? Number(fields[3]) * 1024 : null
+    } catch {
+        return null
+    }
+}
+
+/** While recording: the disk's free space, and a stop before the recording fills it. */
+function watchDisk(started: Active) {
+    const check = async () => {
+        if (active !== started) {
+            return
+        }
+        freeBytes = await diskFree(started.dir)
+        if (active === started && freeBytes !== null && freeBytes < MIN_FREE_BYTES) {
+            logLine(`recording: stopped, the disk is down to ${(freeBytes / 1e9).toFixed(2)} GB free`)
+            recordLog({ type: "recording_disk_full", freeBytes })
+            stopRecording()
+            return
+        }
+        setTimeout(check, DISK_CHECK_MS)
+    }
+    check()
+}
+
 /** A new part once the current one is past the options' minutes or megabytes. */
 function splitIfDue() {
     const current = active
@@ -192,6 +230,7 @@ export function recordingStatus() {
         partBytes: active.writer.bytes,
         messages: active.doneMessages + active.writer.messages,
         dropped: Object.values(streams).reduce((sum, s) => sum + s.dropped, 0),
+        freeBytes,
         topics: [...active.channels.keys()].sort(),
         streams,
         tap: tap.state,
@@ -230,6 +269,8 @@ export function startRecording(root = recordingsDir(), context: Json = {}, optio
         written: {},
     }
     logLine(`recording started: ${writer.path}`)
+    freeBytes = null
+    watchDisk(active)
     recordLog({ type: "recording_started", file, options, ...context })
     tap.start(
         GROUPS.filter((g) => options.streams[g.id].on).flatMap((g) =>

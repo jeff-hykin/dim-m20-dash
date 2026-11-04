@@ -73,6 +73,8 @@ export type RecordState =
         partBytes: number
         messages: number
         dropped: number
+        /** the recording disk's free space (null until checked); a recording stops itself under 1 GB */
+        freeBytes: number | null
         streams: Record<string, StreamCounts>
         tap: { state: "off" | "starting" | "running" | "exited" | "unavailable"; error: string | null }
     }

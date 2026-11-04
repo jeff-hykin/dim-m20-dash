@@ -76,6 +76,19 @@ export function RecordPanel({ record, onClose, onToast }: {
                         ● {clock(active.seconds)} · {megabytes(active.bytes)} · {active.messages.toLocaleString()} msgs
                         {active.dropped ? <span className="warn">· {active.dropped} dropped</span> : null}
                     </div>
+                    {active.freeBytes !== null && (
+                        <div
+                            className={`muted rec-file${active.freeBytes < 5e9 ? " warn" : ""}`}
+                            title="the recording stops itself when the disk is down to 1 GB free"
+                        >
+                            {megabytes(active.freeBytes)} free on the robot's disk
+                            {active.seconds > 5 && active.bytes > 0
+                                ? ` (~${
+                                    Math.round((active.freeBytes - 1e9) / (active.bytes / active.seconds) / 60)
+                                } min at this rate)`
+                                : ""}
+                        </div>
+                    )}
                     <div className="muted rec-file" title={active.files.join("\n")}>
                         {active.file}
                         {active.files.length > 1 ? ` (part ${active.files.length})` : ""}
