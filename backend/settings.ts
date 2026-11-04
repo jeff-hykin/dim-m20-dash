@@ -15,6 +15,8 @@ export type Settings = {
     patterns: Patterns
     /** the running blueprint's streams sampled (and recorded) in blueprint mode */
     blueprintStreams: string[]
+    /** where basic_server's status reports come from (AOS; heartbeats only, never a command) */
+    robotStatus: { host: string; port: number }
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -24,6 +26,7 @@ export const DEFAULT_SETTINGS: Settings = {
     patterns: DEFAULT_PATTERNS,
     // M20Connection's small streams: its pose, the robot's motion/gait state, readiness, the velocity it sends
     blueprintStreams: ["odom", "motion_state", "gait_state", "command_ready", "cmd_vel"],
+    robotStatus: { host: "10.21.31.103", port: 30000 },
 }
 
 let current: Settings = structuredClone(DEFAULT_SETTINGS)
@@ -89,6 +92,12 @@ function validate(next: Settings): Settings {
     }
     if (!Array.isArray(next.patterns.lidarPorts) || next.patterns.lidarPorts.some((p) => !Number.isInteger(p))) {
         throw new HttpError(400, "patterns.lidarPorts must be a list of port numbers")
+    }
+    if (
+        !next.robotStatus || typeof next.robotStatus.host !== "string" || !next.robotStatus.host ||
+        !Number.isInteger(next.robotStatus.port)
+    ) {
+        throw new HttpError(400, "robotStatus must be {host, port}")
     }
     if (!Array.isArray(next.blueprintStreams) || next.blueprintStreams.some((s) => typeof s !== "string")) {
         throw new HttpError(400, "blueprintStreams must be a list of stream names")

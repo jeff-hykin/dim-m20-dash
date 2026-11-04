@@ -1,7 +1,7 @@
 // Every M20 Ctrl action, as an endpoint (http.ts). The page calls only these, and so can Desktop's agent. Motion takes
 // `dryRun: true`, which validates and answers with what would be called without calling it.
 import { logLine } from "./applog.ts"
-import { applySettings, blueprint, boards } from "./app.ts"
+import { applySettings, blueprint, boards, robot } from "./app.ts"
 import { MOTIONS } from "./blueprint.ts"
 import { fakeBoards } from "./boards.ts"
 import { HttpError, type Info, type Route } from "./http.ts"
@@ -43,6 +43,7 @@ function state(withHistory: boolean) {
         blueprint: settings().mode === "blueprint" ? blueprint.state : null,
         directMotion: settings().mode === "direct" ? DIRECT_MOTION : null,
         record: recordingStatus(),
+        robot: robot.state,
         now,
     }
 }
@@ -56,7 +57,8 @@ export const routes: Route[] = [
             "Everything the panel shows: mode (blueprint|direct), source (ssh|fake), boards [{name, label, hosts, link " +
             "{state, host, error}, reachable, indicators {network, stats, lidar, dimos: {level ok|warn|bad|off|unknown, " +
             "text}}, latest (CPU total + per core %, load, memory, temperatures, lidar/dimos processes, uptime)}], " +
-            "blueprint (blueprint mode: running, blueprint, streams, connection, peeked stream values), record",
+            "blueprint (blueprint mode: running, blueprint, streams, connection, peeked stream values), record, robot " +
+            "(the M20's own status: GET api/robot)",
         params: {
             history: { type: "boolean", description: "include each board's last 2 minutes of CPU (the charts)" },
         },
@@ -77,6 +79,19 @@ export const routes: Route[] = [
             }
             return found
         },
+    },
+    {
+        method: "GET",
+        path: "api/robot",
+        when: "you want the M20's battery, motor temperatures, errors, e-stop, motion state, gait or charging",
+        description:
+            "The M20's own status, from its basic_server's reports (M20 Ctrl only heartbeats it, never commands it): " +
+            "{link (up|down|connecting|off|error), basic {motionName, gaitName, chargeName, hardEstop, usage, sleep}, " +
+            "motion {roll, pitch, yaw, height, vx, vy, wz}, battery {left, right: {level %, voltage, celsius, " +
+            "charging, present}}, joints [{joint, motor °C, driver °C}], hottestMotor, hottestDriver, errors [{hex, " +
+            "name, parts}]}",
+        role: "context",
+        handler: () => robot.state,
     },
     {
         method: "PUT",

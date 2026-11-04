@@ -19,7 +19,7 @@
                                 #!${p.runtimeShell}
                                 export PATH="$PATH:${p.openssh}/bin"
                                 export DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1
-                                exec ${p.deno}/bin/deno run -A --no-lock --no-config ${./backend}/main.ts --frontend ${./frontend/dist} "$@"
+                                exec ${p.deno}/bin/deno run -A --unstable-net --no-lock --no-config ${./backend}/main.ts --frontend ${./frontend/dist} "$@"
                             '';
                         };
                 in rec {
