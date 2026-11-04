@@ -107,6 +107,52 @@ const jointName = (joint: string) =>
             }`,
     )
 
+/** a speed's step and its clamp (SPEED_LIMITS) */
+const SPEED_STEP = { linear: 0.05, angular: 0.1 }
+
+/** "Driving speed − 0.50 m/s +": one tap per step, clamped to SPEED_LIMITS */
+function SpeedStepper(
+    { label, value, unit, kind, onChange }: {
+        label: string
+        value: number
+        unit: string
+        kind: "linear" | "angular"
+        onChange: (value: number) => void
+    },
+) {
+    const [low, high] = SPEED_LIMITS[kind]
+    const step = (direction: number) =>
+        onChange(Math.min(high, Math.max(low, Math.round((value + direction * SPEED_STEP[kind]) * 100) / 100)))
+    return (
+        <div className="stepper" data-ui={`speed.${kind}`}>
+            <span className="stepper-label">{label}</span>
+            <button
+                type="button"
+                className="dim-btn sm icon"
+                data-ui={`speed.${kind}.minus`}
+                aria-label={`${label} down`}
+                disabled={value <= low}
+                onClick={() => step(-1)}
+            >
+                −
+            </button>
+            <span className="stepper-value dim-mono">
+                {value.toFixed(2)} <small>{unit}</small>
+            </span>
+            <button
+                type="button"
+                className="dim-btn sm icon"
+                data-ui={`speed.${kind}.plus`}
+                aria-label={`${label} up`}
+                disabled={value >= high}
+                onClick={() => step(1)}
+            >
+                +
+            </button>
+        </div>
+    )
+}
+
 function BatteryRow({ label, battery }: { label: string; battery: Battery }) {
     if (!battery.present) {
         return (
@@ -1135,30 +1181,6 @@ export function App() {
 
                     <Card title="Speed" collapsed={collapsed.has("Speed")} onToggle={() => toggleCard("Speed")}>
                         <div className="speed">
-                            <label>
-                                linear <span className="v">{speeds.linear.toFixed(2)} m/s</span>
-                            </label>
-                            <input
-                                className="dim-range"
-                                type="range"
-                                min={SPEED_LIMITS.linear[0]}
-                                max={SPEED_LIMITS.linear[1]}
-                                step="0.05"
-                                value={speeds.linear}
-                                onChange={(e) => setSpeeds({ ...speeds, linear: parseFloat(e.target.value) })}
-                            />
-                            <label>
-                                turn <span className="v">{speeds.angular.toFixed(2)} rad/s</span>
-                            </label>
-                            <input
-                                className="dim-range"
-                                type="range"
-                                min={SPEED_LIMITS.angular[0]}
-                                max={SPEED_LIMITS.angular[1]}
-                                step="0.05"
-                                value={speeds.angular}
-                                onChange={(e) => setSpeeds({ ...speeds, angular: parseFloat(e.target.value) })}
-                            />
                             <div className="speed-foot">
                                 <span>Shift / LT boosts ×1.6</span>
                                 <label className="dry">
@@ -1332,6 +1354,24 @@ export function App() {
                 </button>
             </div>
 
+            {/* desktop: the speeds beside the video, over the readout and the pad */}
+            <div className="side-speeds dim-panel glass">
+                <SpeedStepper
+                    label="Driving speed"
+                    value={speeds.linear}
+                    unit="m/s"
+                    kind="linear"
+                    onChange={(linear) => setSpeeds((now) => ({ ...now, linear }))}
+                />
+                <SpeedStepper
+                    label="Turning speed"
+                    value={speeds.angular}
+                    unit="rad/s"
+                    kind="angular"
+                    onChange={(angular) => setSpeeds((now) => ({ ...now, angular }))}
+                />
+            </div>
+
             <div className={`dim-panel glass dim-mono vel${moving ? " on" : ""}`}>
                 <div className="row">
                     <span>vx</span>
@@ -1395,6 +1435,23 @@ export function App() {
 
             {/* phone: two thumbs (left moves, right turns) with STOP between */}
             <div className="sticks">
+                {/* the speeds, over each thumb: − / + (saved on this device) */}
+                <div className="stick-speeds">
+                    <SpeedStepper
+                        label="speed"
+                        value={speeds.linear}
+                        unit="m/s"
+                        kind="linear"
+                        onChange={(linear) => setSpeeds((now) => ({ ...now, linear }))}
+                    />
+                    <SpeedStepper
+                        label="turn"
+                        value={speeds.angular}
+                        unit="rad/s"
+                        kind="angular"
+                        onChange={(angular) => setSpeeds((now) => ({ ...now, angular }))}
+                    />
+                </div>
                 <ThumbStick
                     className="stick-zone left"
                     label="move"
