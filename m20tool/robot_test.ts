@@ -10,6 +10,8 @@ type Fake = {
     usage: number
     gait: number
     charge: number
+    // Like the real robot after a sit->stand: its own reset to Basic lands this late and wipes a usage mode set before it.
+    settleMs?: number
     received: { type: number; command: number; items: Record<string, unknown> }[]
     udpPort: number
     tcpPort: number
@@ -71,7 +73,16 @@ function fakeBasicServer(start: Partial<Fake> = {}, ports = [0, 0]): Fake {
                 const { type, command, items } = frame
                 if (type === 2 && command === 22) {
                     const want = items.MotionParam as number
-                    if (want === 1) {
+                    if (want === 1 && fake.settleMs) {
+                        later(100, () => {
+                            fake.motion = 1
+                            fake.usage = 0
+                        })
+                        later(100 + fake.settleMs, () => {
+                            fake.usage = 0
+                            fake.gait = 0x1001
+                        })
+                    } else if (want === 1) {
                         later(100, () => {
                             fake.motion = 1
                             fake.usage = 0
@@ -149,6 +160,16 @@ Deno.test("stand from sitting: Stand, RL control, THEN navigation mode, Basic, a
             '2/23 {"GaitParam":4097}',
             '2/23 {"GaitParam":12291}',
         ])
+        assertEquals([fake.motion, fake.usage, fake.gait], [17, 1, 0x3003])
+        assert(lines.at(-1)!.startsWith("standing in RL control, navigation mode"))
+    })
+})
+
+Deno.test("stand from sitting waits out the robot's own late reset to Basic before navigation mode", async () => {
+    await withFake({ motion: 4, usage: 1, settleMs: 1500 }, async (link, fake, lines) => {
+        await stand(link)
+        // the mode has to survive the robot's reset, not just be there when stand returns
+        await new Promise((resolve) => setTimeout(resolve, fake.settleMs! + 300))
         assertEquals([fake.motion, fake.usage, fake.gait], [17, 1, 0x3003])
         assert(lines.at(-1)!.startsWith("standing in RL control, navigation mode"))
     })

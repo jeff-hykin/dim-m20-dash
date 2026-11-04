@@ -248,6 +248,27 @@ export class Link {
         }
     }
 
+    /** Watches BasicStatus for `seconds`; false as soon as a report shows `field` != `value`. */
+    async holds(field: string, value: number, seconds: number, label: string): Promise<boolean> {
+        if (this.dryRun) {
+            this.out(`  then watch BasicStatus.${field} stay ${value} for ${seconds} s (${label})`)
+            return true
+        }
+        const deadline = now() + seconds
+        while (true) {
+            const items = this.#reports.get(REPORT_BASIC)?.items
+            const seen = ((items?.BasicStatus ?? {}) as Status)[field]
+            if (seen !== undefined && seen !== value) {
+                return false
+            }
+            const left = deadline - now()
+            if (left <= 0) {
+                return true
+            }
+            await this.#nextReport(left)
+        }
+    }
+
     close() {
         clearInterval(this.#timer)
         try {
@@ -304,6 +325,31 @@ async function setGait(link: Link, gait: number) {
     throw new Fail(`the robot did not confirm the ${GAIT[gait]} gait`)
 }
 
+// basic_server's own wait for a gait change (its "waitForGaitChange timeout" log line).
+const VENDOR_GAIT_WAIT_S = 3
+// Tries at the usage mode before giving up; after a stand basic_server took two of its gait waits to settle.
+const MODE_ATTEMPTS = 3
+
+async function setUsageMode(link: Link, usage: number) {
+    const reply = await link.tcp(
+        1101,
+        5,
+        { Mode: usage },
+        `usage mode -> ${USAGE[usage]} (after standing: standing up resets it)`,
+    )
+    if (reply.ErrorCode !== 0) {
+        throw new Fail(
+            `basic_server refused ${USAGE[usage]} mode (ErrorCode ${reply.ErrorCode}): ${JSON.stringify(reply)}`,
+        )
+    }
+    if (!(await link.wait("ControlUsageMode", usage, 3, `${USAGE[usage]} mode`))) {
+        const now_ = await link.basic()
+        throw new Fail(
+            `basic_server accepted ${USAGE[usage]} mode but still reports ${USAGE[now_?.ControlUsageMode as number]}`,
+        )
+    }
+}
+
 /**
  * Stand, RL Control, then the usage mode, then the gait, and confirm all three in a fresh report.
  * The order matters: basic_server resets the usage mode to regular (and the gait to Basic) when the robot stands up
@@ -326,28 +372,26 @@ async function ready(link: Link, usage: number, gait: number, label: string) {
         if (!(await link.wait("MotionState", MOTION_RL, 5, "RL control"))) {
             throw new Fail("the robot did not confirm RL Control within 5 s")
         }
+        // Standing up makes basic_server reset the gait to Basic itself, and a usage mode sent before that lands is lost.
+        await link.wait("Gait", GAIT_BASIC, VENDOR_GAIT_WAIT_S * MODE_ATTEMPTS, "basic_server's own reset to basic")
     }
-    const reply = await link.tcp(
-        1101,
-        5,
-        { Mode: usage },
-        `usage mode -> ${USAGE[usage]} (after standing: standing up resets it)`,
-    )
-    if (reply.ErrorCode !== 0) {
-        throw new Fail(
-            `basic_server refused ${USAGE[usage]} mode (ErrorCode ${reply.ErrorCode}): ${JSON.stringify(reply)}`,
-        )
-    }
-    if (!(await link.wait("ControlUsageMode", usage, 3, `${USAGE[usage]} mode`))) {
-        const now_ = await link.basic()
-        throw new Fail(
-            `basic_server accepted ${USAGE[usage]} mode but still reports ${USAGE[now_?.ControlUsageMode as number]}`,
-        )
-    }
-    // A mode change makes basic_server switch to Basic itself; a gait sent during that reset is dropped, so confirm Basic first.
-    await setGait(link, GAIT_BASIC)
-    if (gait !== GAIT_BASIC) {
-        await setGait(link, gait)
+    // Right after a sit->stand basic_server is still finishing its own gait change (it waits up to 3 s per try);
+    // a usage mode sent then is answered OK but never applied (no "VelControl 设置控制模式" in its log), so the
+    // mode is watched for one such wait after the gait is set, and sent again if it fell back.
+    for (let attempt = 1;; attempt++) {
+        await setUsageMode(link, usage)
+        // A mode change makes basic_server switch to Basic itself; a gait sent during that reset is dropped, so confirm Basic first.
+        await setGait(link, GAIT_BASIC)
+        if (gait !== GAIT_BASIC) {
+            await setGait(link, gait)
+        }
+        if (await link.holds("ControlUsageMode", usage, VENDOR_GAIT_WAIT_S, `${USAGE[usage]} mode sticks`)) {
+            break
+        }
+        if (attempt >= MODE_ATTEMPTS) {
+            throw new Fail(`the robot dropped ${USAGE[usage]} mode ${MODE_ATTEMPTS} times right after accepting it`)
+        }
+        link.note(`(the robot dropped ${USAGE[usage]} mode; sending it again)`)
     }
     link.note("(then checks a report newer than the gait switch shows RL control, this usage mode and this gait)")
     status = await link.basic(now())

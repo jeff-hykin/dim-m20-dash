@@ -1,5 +1,5 @@
 // Facts about a Deep Robotics M20 (Lynx) and the way we set them up: addresses, logins, which board is which.
-export const VERSION = "0.3.9"
+export const VERSION = "0.3.10"
 export const REPO = "jeff-hykin/dim-m20-dash"
 export const RELEASE_TAG = `m20tool-v${VERSION}`
 export const INSTALL_ONE_LINER = `curl -fsSL https://raw.githubusercontent.com/${REPO}/main/m20tool/install.sh | sh`
