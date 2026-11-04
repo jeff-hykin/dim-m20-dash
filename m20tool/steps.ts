@@ -3,13 +3,16 @@
 import {
     type Action,
     active,
+    at,
     blockCurrent,
+    describe,
     enabled,
     exec,
     exists,
     killAll,
     online,
     type Params,
+    perform,
     processes,
     put,
     readText,
@@ -60,10 +63,48 @@ const stillThere = (...paths: string[]) => paths.filter(exists).map((path) => `o
 const removeAll = (...paths: string[]): Action => ({
     kind: "do",
     text: `remove the old ${paths.join(", ")} (if there)`,
-    run: () => paths.filter(exists).forEach((path) => Deno.removeSync(path)),
+    run: () => paths.filter(exists).forEach((path) => Deno.removeSync(at(path))),
 })
 const notEnabled = async (...units: string[]) =>
     (await Promise.all(units.map(async (u) => ((await enabled(u)) ? "" : `${u} not enabled`)))).filter(Boolean)
+/** systemctl daemon-reload, only when a unit file changed in this step */
+const daemonReload = (): Action => ({
+    kind: "exec",
+    argv: ["systemctl", "daemon-reload"],
+    ifChanged: /^\/etc\/systemd\/system\//,
+})
+
+/**
+ * `actions` only when the live state needs them (checked on the board when it runs). `live[name]`, which the step's
+ * check reports, lets the plan say ahead of time whether they will run.
+ */
+function onlyIf(
+    p: Params,
+    name: string,
+    needed: () => Promise<boolean>,
+    whyNot: string,
+    actions: Action[],
+): Action {
+    const text = actions.map(describe).join("; ")
+    return {
+        kind: "do",
+        text: p.live?.[name] === false
+            ? `nothing to do, ${whyNot} (not run: ${text})`
+            : p.live?.[name] === true
+            ? text
+            : `${text} (only if needed: skipped when ${whyNot})`,
+        run: async () => {
+            if (await needed()) {
+                await perform(actions, (line) => console.error(line))
+            }
+        },
+    }
+}
+const notEnabledNow = async (unit: string) => !(await enabled(unit))
+/** each live check's answer (true = its actions are needed), for the plan */
+const liveAnswers = async (checks: Record<string, () => Promise<boolean>>) =>
+    Object.fromEntries(await Promise.all(Object.entries(checks).map(async ([name, f]) => [name, await f()])))
+
 const clockTodo = () =>
     new Date().getUTCFullYear() >= 2025
         ? []
@@ -88,9 +129,9 @@ function authorizedKey(id: string, board: BoardName, title: string, key: (p: Par
                 if (!k || has(k)) {
                     return
                 }
-                Deno.mkdirSync("/home/user/.ssh", { recursive: true, mode: 0o700 })
+                Deno.mkdirSync(at("/home/user/.ssh"), { recursive: true, mode: 0o700 })
                 const text = readText(path) ?? ""
-                Deno.writeTextFileSync(path, `${text}${text && !text.endsWith("\n") ? "\n" : ""}${k}\n`, {
+                Deno.writeTextFileSync(at(path), `${text}${text && !text.endsWith("\n") ? "\n" : ""}${k}\n`, {
                     mode: 0o600,
                 })
             },
@@ -138,20 +179,56 @@ const USB_FILES = () => [
     file("/etc/udev/rules.d/90-usb-ethernet.rules", "gos/90-usb-ethernet.rules", 0o644),
 ]
 
+/** the RTL8153 adapter is plugged in (its USB vendor:product) */
+function usbAdapterPresent(): boolean {
+    try {
+        for (const entry of Deno.readDirSync(at("/sys/bus/usb/devices"))) {
+            const dir = `/sys/bus/usb/devices/${entry.name}`
+            if (`${readText(`${dir}/idVendor`)?.trim()}:${readText(`${dir}/idProduct`)?.trim()}` === "0bda:8153") {
+                return true
+            }
+        }
+    } catch {
+        // no USB bus
+    }
+    return false
+}
+const ipv4 = async () => (await exec(["ip", "-o", "-4", "addr", "show"])).stdout
+const defaultRoutes = async () => (await exec(["ip", "route", "show", "default"])).stdout
+
+const USB_LIVE = (p: Params) => ({
+    // re-running the link only helps when the adapter is there and its link isn't up as usb-ethernet-up sets it
+    usbRestart: async () =>
+        !p.onCable && usbAdapterPresent() &&
+        !((await ipv4()).includes("192.168.3.2/24") && (await defaultRoutes()).includes("via 192.168.3.1")),
+    usbEnable: () => notEnabledNow("usb-ethernet.service"),
+})
+
 const usbEthernet: BoardStep = {
     id: "gos/usb-ethernet",
     board: "GOS",
     title:
         "GOS: USB-Ethernet fallback (any RTL8153 USB-C adapter -> GOS 192.168.3.2, shares its internet with the other boards)",
     root: true,
-    check: async () => ({ todos: [...filesDiffer(USB_FILES()), ...(await notEnabled("usb-ethernet.service"))] }),
+    check: async (p) => ({
+        todos: [...filesDiffer(USB_FILES()), ...(await notEnabled("usb-ethernet.service"))],
+        data: { live: await liveAnswers(USB_LIVE(p)) },
+    }),
     actions: (p) => [
         ...putAll(USB_FILES()),
-        sys("udevadm", "control", "--reload"),
-        sys("systemctl", "daemon-reload"),
-        sys("systemctl", "enable", "usb-ethernet.service"),
-        // not while we're on the cable: a restart would drop this very link for a moment
-        ...(p.onCable ? [] : [sysMaybe("rmmod", "r8152"), sysMaybe("systemctl", "restart", "usb-ethernet.service")]),
+        { kind: "exec", argv: ["udevadm", "control", "--reload"], ifChanged: /^\/etc\/udev\// },
+        daemonReload(),
+        onlyIf(p, "usbEnable", USB_LIVE(p).usbEnable, "it's already enabled", [
+            sys("systemctl", "enable", "usb-ethernet.service"),
+        ]),
+        // never while we're on the cable: a restart would drop this very link for a moment
+        onlyIf(
+            p,
+            "usbRestart",
+            USB_LIVE(p).usbRestart,
+            p.onCable ? "this computer is on the cable" : "no adapter is plugged in, or its link is already up",
+            [sysMaybe("rmmod", "r8152"), sysMaybe("systemctl", "restart", "usb-ethernet.service")],
+        ),
     ],
 }
 
@@ -160,20 +237,43 @@ const AOS_UPLINK_FILES = () => [
     file("/etc/systemd/system/aos-uplink.service", "gos/aos-uplink.service", 0o644),
 ]
 
+/** GOS's default route via AOS is already what aos-uplink-up sets (its --check, here in Deno) */
+async function aosRouteCorrect(): Promise<boolean> {
+    const line = (await ipv4()).split("\n").find((l) => /10\.21\.31\./.test(l))
+    const dev = line?.trim().split(/\s+/)[1]
+    return !!dev &&
+        (await defaultRoutes()).split("\n").some((r) => r.trim() === `default via 10.21.31.103 dev ${dev} metric 600`)
+}
+const UPLINK_LIVE = {
+    uplinkRestart: async () => !(await aosRouteCorrect()),
+    uplinkEnable: () => notEnabledNow("aos-uplink.service"),
+}
+
 const aosUplink: BoardStep = {
     id: "gos/aos-uplink",
     board: "GOS",
     title: "GOS: internet through AOS's Wi-Fi (aos-uplink), once AOS has internet over wlan0",
     root: true,
-    check: async () => ({ todos: [...filesDiffer(AOS_UPLINK_FILES()), ...(await notEnabled("aos-uplink.service"))] }),
+    check: async () => ({
+        todos: [...filesDiffer(AOS_UPLINK_FILES()), ...(await notEnabled("aos-uplink.service"))],
+        data: { live: await liveAnswers(UPLINK_LIVE) },
+    }),
     actions: (p) =>
         p.aosWlanOnline === false
             ? [{ kind: "do", text: "skipped: AOS has no internet over wlan0 yet (rerun once it has)", run: () => {} }]
             : [
                 ...putAll(AOS_UPLINK_FILES()),
-                sys("systemctl", "daemon-reload"),
-                sys("systemctl", "enable", "aos-uplink.service"),
-                sys("systemctl", "restart", "aos-uplink.service"),
+                daemonReload(),
+                onlyIf(p, "uplinkEnable", UPLINK_LIVE.uplinkEnable, "it's already enabled", [
+                    sys("systemctl", "enable", "aos-uplink.service"),
+                ]),
+                onlyIf(
+                    p,
+                    "uplinkRestart",
+                    UPLINK_LIVE.uplinkRestart,
+                    "the default route via AOS (10.21.31.103, metric 600) is already there",
+                    [sys("systemctl", "restart", "aos-uplink.service")],
+                ),
             ],
 }
 
@@ -191,8 +291,8 @@ function deno(board: BoardName): BoardStep {
             text: `install the uploaded deno 2.9.8 aarch64 as ${DENO} (755); remove the upload`,
             run: () => {
                 if (p.upload) {
-                    put(DENO, Deno.readFileSync(p.upload), 0o755)
-                    Deno.removeSync(p.upload)
+                    put(DENO, Deno.readFileSync(at(p.upload)), 0o755)
+                    Deno.removeSync(at(p.upload))
                 }
             },
         }],
@@ -206,6 +306,11 @@ const TIME_FILES = (aos: boolean) => [
     file("/etc/systemd/system/phc2sys.service.d/real-time.conf", "both/phc2sys-real-time.conf", 0o644),
     ...(aos ? [file("/etc/default/real-time-offset", "aos/real-time-offset.default", 0o644)] : []),
 ]
+
+const TIME_LIVE = {
+    timerEnable: async () => !(await enabled("real-time-offset.timer")) || !(await active("real-time-offset.timer")),
+    offsetNow: () => Promise.resolve(clockTodo().length > 0),
+}
 
 function time(board: BoardName): BoardStep {
     const aos = board === "AOS"
@@ -224,19 +329,22 @@ function time(board: BoardName): BoardStep {
                 ...(aos && !exists("/root/.ssh/id_ed25519.pub") ? ["AOS has no root ssh key"] : []),
                 ...(aos ? [] : clockTodo()),
             ],
-            data: aos ? readText("/root/.ssh/id_ed25519.pub")?.trim() : undefined,
+            data: {
+                rootKey: aos ? readText("/root/.ssh/id_ed25519.pub")?.trim() : undefined,
+                live: await liveAnswers(TIME_LIVE),
+            },
         }),
-        actions: () => [
+        actions: (p) => [
             {
                 kind: "do",
                 text:
-                    "first, /run/phc2sys-offset.env = PHC2SYS_OFFSET=<the offset phc2sys runs with now, /run/phc2sys-offset> so a phc2sys restart under the new drop-in keeps it",
+                    "first, /run/phc2sys-offset.env = PHC2SYS_OFFSET=<the offset phc2sys runs with now, /run/phc2sys-offset> (if it isn't already), so a phc2sys restart under the new drop-in keeps it",
                 run: () => {
                     const current = (readText("/run/phc2sys-offset") ?? "0").trim()
-                    Deno.writeTextFileSync(
-                        "/run/phc2sys-offset.env",
-                        `PHC2SYS_OFFSET=${/^-?\d+$/.test(current) ? current : "0"}\n`,
-                    )
+                    const env = `PHC2SYS_OFFSET=${/^-?\d+$/.test(current) ? current : "0"}\n`
+                    if (readText("/run/phc2sys-offset.env") !== env) {
+                        Deno.writeTextFileSync(at("/run/phc2sys-offset.env"), env)
+                    }
                 },
             },
             ...putAll(TIME_FILES(aos)),
@@ -247,7 +355,7 @@ function time(board: BoardName): BoardStep {
                     text: `ssh-keygen -q -t ed25519 -N '' -f /root/.ssh/id_ed25519 (only if there's no root key)`,
                     run: async () => {
                         if (!exists("/root/.ssh/id_ed25519")) {
-                            Deno.mkdirSync("/root/.ssh", { recursive: true, mode: 0o700 })
+                            Deno.mkdirSync(at("/root/.ssh"), { recursive: true, mode: 0o700 })
                             const r = await exec([
                                 "ssh-keygen",
                                 "-q",
@@ -265,9 +373,13 @@ function time(board: BoardName): BoardStep {
                     },
                 }]
                 : []),
-            sys("systemctl", "daemon-reload"),
-            sys("systemctl", "enable", "--now", "real-time-offset.timer"),
-            sysMaybe("systemctl", "start", "real-time-offset.service"),
+            daemonReload(),
+            onlyIf(p, "timerEnable", TIME_LIVE.timerEnable, "the timer is already enabled and running", [
+                sys("systemctl", "enable", "--now", "real-time-offset.timer"),
+            ]),
+            onlyIf(p, "offsetNow", TIME_LIVE.offsetNow, "the clock is already on real time (the timer keeps it so)", [
+                sysMaybe("systemctl", "start", "real-time-offset.service"),
+            ]),
         ],
     }
 }
@@ -278,8 +390,12 @@ const aosTimeStart: BoardStep = {
     board: "AOS",
     title: "AOS: clock on real time (offset fetched from GOS)",
     root: true,
-    check: () => Promise.resolve({ todos: clockTodo() }),
-    actions: () => [sysMaybe("systemctl", "start", "real-time-offset.service")],
+    check: async () => ({ todos: clockTodo(), data: { live: await liveAnswers({ offsetNow: TIME_LIVE.offsetNow }) } }),
+    actions: (p) => [
+        onlyIf(p, "offsetNow", TIME_LIVE.offsetNow, "the clock is already on real time", [
+            sysMaybe("systemctl", "start", "real-time-offset.service"),
+        ]),
+    ],
 }
 
 function tailscale(board: BoardName): BoardStep {
@@ -295,6 +411,11 @@ function tailscale(board: BoardName): BoardStep {
                 ...(await notEnabled("tailscaled")),
                 ...((await exec(["tailscale", "status"])).code === 0 ? [] : ["not logged in to Tailscale"]),
             ],
+            data: {
+                live: await liveAnswers({
+                    tailscaledEnable: async () => !(await enabled("tailscaled")) || !(await active("tailscaled")),
+                }),
+            },
         }),
         actions: (p) => [
             {
@@ -308,28 +429,34 @@ function tailscale(board: BoardName): BoardStep {
                     const dir = Deno.makeTempDirSync({ prefix: "m20tool-tailscale-" })
                     try {
                         await untgz(p.upload, dir)
-                        put("/usr/bin/tailscale", Deno.readFileSync(`${dir}/tailscale`), 0o755)
-                        put("/usr/sbin/tailscaled", Deno.readFileSync(`${dir}/tailscaled`), 0o755)
+                        put("/usr/bin/tailscale", Deno.readFileSync(at(`${dir}/tailscale`)), 0o755)
+                        put("/usr/sbin/tailscaled", Deno.readFileSync(at(`${dir}/tailscaled`)), 0o755)
                         put(
                             "/etc/systemd/system/tailscaled.service",
-                            Deno.readFileSync(`${dir}/systemd/tailscaled.service`),
+                            Deno.readFileSync(at(`${dir}/systemd/tailscaled.service`)),
                             0o644,
                         )
                         if (!exists("/etc/default/tailscaled")) {
                             put(
                                 "/etc/default/tailscaled",
-                                Deno.readFileSync(`${dir}/systemd/tailscaled.defaults`),
+                                Deno.readFileSync(at(`${dir}/systemd/tailscaled.defaults`)),
                                 0o644,
                             )
                         }
                     } finally {
-                        Deno.removeSync(dir, { recursive: true })
-                        Deno.removeSync(p.upload)
+                        Deno.removeSync(at(dir), { recursive: true })
+                        Deno.removeSync(at(p.upload))
                     }
                 },
             },
-            sys("systemctl", "daemon-reload"),
-            sys("systemctl", "enable", "--now", "tailscaled"),
+            daemonReload(),
+            onlyIf(
+                p,
+                "tailscaledEnable",
+                async () => !(await enabled("tailscaled")) || !(await active("tailscaled")),
+                "tailscaled is already enabled and running",
+                [sys("systemctl", "enable", "--now", "tailscaled")],
+            ),
             {
                 kind: "do",
                 text:
@@ -345,6 +472,16 @@ export const tailscaleUpArgv = (
     board: BoardName,
 ) => ["tailscale", "up", "--accept-dns=false", `--hostname=${board === "GOS" ? "m20-gos" : "m20-aos"}`]
 
+function sameBinary(installed: string, running: string): boolean {
+    try {
+        const a = Deno.readFileSync(at(installed))
+        const b = Deno.readFileSync(running)
+        return a.length === b.length && a.every((v, i) => v === b[i])
+    } catch {
+        return false
+    }
+}
+
 function selfInstall(board: BoardName): BoardStep {
     return {
         id: `${board.toLowerCase()}/self-install`,
@@ -353,11 +490,11 @@ function selfInstall(board: BoardName): BoardStep {
         root: true,
         check: async () => {
             const version = (await exec([BOARD_BIN, "--version"])).stdout
+            // this version, or byte for byte the m20tool running this check
+            const same = version === `m20tool ${VERSION}` || sameBinary(BOARD_BIN, Deno.execPath())
             return {
                 todos: [
-                    ...(version === `m20tool ${VERSION}`
-                        ? []
-                        : [`${BOARD_BIN} is ${version || "missing"}, not ${VERSION}`]),
+                    ...(same ? [] : [`${BOARD_BIN} is ${version || "missing"}, not ${VERSION}`]),
                     ...(sameFile(OLD_CLI, WRAPPER) ? [] : [`${OLD_CLI} missing or different`]),
                 ],
             }
@@ -368,7 +505,7 @@ function selfInstall(board: BoardName): BoardStep {
                 text: `copy this m20tool to ${BOARD_BIN} (mode 755)`,
                 run: () => {
                     if (Deno.execPath() !== BOARD_BIN) {
-                        put(BOARD_BIN, Deno.readFileSync(Deno.execPath()), 0o755)
+                        put(BOARD_BIN, Deno.readFileSync(at(Deno.execPath())), 0o755)
                     }
                 },
             },
@@ -378,7 +515,7 @@ function selfInstall(board: BoardName): BoardStep {
                 run: () => {
                     const old = readText(OLD_CLI)
                     if (old !== null && !old.includes("m20tool")) {
-                        Deno.renameSync(OLD_CLI, `${OLD_CLI}.python-bak`)
+                        Deno.renameSync(at(OLD_CLI), at(`${OLD_CLI}.python-bak`))
                     }
                 },
             },
@@ -459,7 +596,7 @@ const vendor: BoardStep = {
             run: () => {
                 const backup = `${HOST_START}.orig-before-network-safety`
                 if (!exists(backup)) {
-                    Deno.copyFileSync(HOST_START, backup)
+                    Deno.copyFileSync(at(HOST_START), at(backup))
                 }
                 const text = readText(HOST_START)!
                 if (VENDOR_LINE.test(text)) {
@@ -469,7 +606,7 @@ const vendor: BoardStep = {
                             VENDOR_LINE,
                             "# network-safety: vendor hotspot babysitter off (backup: host_start.sh.orig-before-network-safety)\n# $1",
                         ),
-                        Deno.statSync(HOST_START).mode! & 0o777,
+                        Deno.statSync(at(HOST_START)).mode! & 0o777,
                     )
                 }
             },
@@ -489,11 +626,11 @@ const vendor: BoardStep = {
                     await exec(["systemctl", "disable", "--now", "m20-wifi-deadman"])
                 }
                 if (exists("/etc/m20-hotspot-off")) {
-                    Deno.removeSync("/etc/m20-hotspot-off")
+                    Deno.removeSync(at("/etc/m20-hotspot-off"))
                 }
                 const original = `${AP_START}.orig-before-hotspot-flag`
                 if ((readText(AP_START) ?? "").includes("m20-hotspot-off") && exists(original)) {
-                    Deno.copyFileSync(original, AP_START)
+                    Deno.copyFileSync(at(original), at(AP_START))
                 }
             },
         },
@@ -511,7 +648,7 @@ const OLD_SAFETY = [
 
 async function sha256(path: string): Promise<string> {
     try {
-        const digest = await crypto.subtle.digest("SHA-256", Deno.readFileSync(path))
+        const digest = await crypto.subtle.digest("SHA-256", Deno.readFileSync(at(path)))
         return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")
     } catch {
         return ""
@@ -536,6 +673,7 @@ const networkSafety: BoardStep = {
             ...(await notEnabled("network-safety.service")),
             ...((await active("network-safety.service")) ? [] : ["network-safety.service not running"]),
         ],
+        data: { live: await liveAnswers({ nsEnable: () => notEnabledNow("network-safety.service") }) },
     }),
     actions: (p) => [
         {
@@ -544,9 +682,9 @@ const networkSafety: BoardStep = {
                 `(only when it differs) install the uploaded compiled network-safety as ${NETWORK_SAFETY_BIN} (755); remove the upload`,
             run: () => {
                 if (p.upload) {
-                    Deno.mkdirSync("/usr/local/libexec", { recursive: true })
-                    put(NETWORK_SAFETY_BIN, Deno.readFileSync(p.upload), 0o755)
-                    Deno.removeSync(p.upload)
+                    Deno.mkdirSync(at("/usr/local/libexec"), { recursive: true })
+                    put(NETWORK_SAFETY_BIN, Deno.readFileSync(at(p.upload)), 0o755)
+                    Deno.removeSync(at(p.upload))
                 }
             },
         },
@@ -556,15 +694,17 @@ const networkSafety: BoardStep = {
             kind: "do",
             text: "chown user:user /home/user/readme /home/user/readme/network_safety",
             run: () => {
-                const info = Deno.statSync("/home/user")
+                const info = Deno.statSync(at("/home/user"))
                 for (const dir of ["/home/user/readme", "/home/user/readme/network_safety"]) {
-                    Deno.mkdirSync(dir, { recursive: true })
-                    Deno.chownSync(dir, info.uid!, info.gid!)
+                    Deno.mkdirSync(at(dir), { recursive: true })
+                    Deno.chownSync(at(dir), info.uid!, info.gid!)
                 }
             },
         },
-        sys("systemctl", "daemon-reload"),
-        sys("systemctl", "enable", "network-safety.service"),
+        daemonReload(),
+        onlyIf(p, "nsEnable", () => notEnabledNow("network-safety.service"), "it's already enabled", [
+            sys("systemctl", "enable", "network-safety.service"),
+        ]),
         {
             kind: "do",
             text:
@@ -583,6 +723,17 @@ const FIREWALL_FILES = () => [
     file("/usr/local/bin/office-nat", "aos/office-nat", 0o755),
     file("/etc/systemd/system/office-nat.service", "aos/office-nat.service", 0o644),
 ]
+
+/** office-nat --check (the new script, run by the board's Deno) finds a rule missing; no Deno yet counts as missing */
+async function natRulesMissing(): Promise<boolean> {
+    const script = Deno.makeTempFileSync({ prefix: "m20tool-office-nat-" })
+    try {
+        Deno.writeTextFileSync(script, fileText("aos/office-nat"))
+        return (await exec([...DENO_RUN, script, "--check"])).code !== 0
+    } finally {
+        Deno.removeSync(script)
+    }
+}
 
 const firewall: BoardStep = {
     id: "aos/firewall",
@@ -609,13 +760,25 @@ const firewall: BoardStep = {
                 todos.push(`no DDS drop rule: ${chain} ${flag} wlan0`)
             }
         }
-        return { todos }
+        return {
+            todos,
+            data: {
+                live: await liveAnswers({
+                    natEnable: () => notEnabledNow("office-nat.service"),
+                    natRun: natRulesMissing,
+                }),
+            },
+        }
     },
-    actions: () => [
+    actions: (p) => [
         ...putAll(FIREWALL_FILES()),
-        sys("systemctl", "daemon-reload"),
-        sys("systemctl", "enable", "office-nat.service"),
-        sys(...DENO_RUN, "/usr/local/bin/office-nat"),
+        daemonReload(),
+        onlyIf(p, "natEnable", () => notEnabledNow("office-nat.service"), "it's already enabled", [
+            sys("systemctl", "enable", "office-nat.service"),
+        ]),
+        onlyIf(p, "natRun", natRulesMissing, "all 17 office-nat rules are already in place (office-nat --check)", [
+            sys(...DENO_RUN, "/usr/local/bin/office-nat"),
+        ]),
     ],
 }
 
@@ -641,6 +804,8 @@ async function findProfile(ssid: string): Promise<string | undefined> {
     }
 }
 
+const radioOff = async () => (await exec(["nmcli", "radio", "wifi"])).stdout !== "enabled"
+
 const bands: BoardStep = {
     id: "aos/bands",
     board: "AOS",
@@ -665,10 +830,10 @@ const bands: BoardStep = {
         if (!channels.some((l) => /\* 5\d{3}/.test(l))) {
             todos.push("the radio has no 5 GHz channel enabled")
         }
-        return { todos }
+        return { todos, data: { live: await liveAnswers({ radioOn: radioOff }) } }
     },
-    actions: () => [
-        sys("nmcli", "radio", "wifi", "on"),
+    actions: (p) => [
+        onlyIf(p, "radioOn", radioOff, "the radio is already on", [sys("nmcli", "radio", "wifi", "on")]),
         {
             kind: "do",
             text: `nmcli connection modify <each saved network pinned to a band> 802-11-wireless.band ""`,
@@ -785,7 +950,7 @@ const wifi: BoardStep = {
                     try {
                         const config = JSON.parse(readText(path) ?? "{}")
                         config.savedMode = "wifiInternet"
-                        Deno.writeTextFileSync(path, JSON.stringify(config, null, 4) + "\n")
+                        Deno.writeTextFileSync(at(path), JSON.stringify(config, null, 4) + "\n")
                     } catch {
                         // network-safety rewrites a config it can't read
                     }

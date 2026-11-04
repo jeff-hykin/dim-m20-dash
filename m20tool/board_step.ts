@@ -45,7 +45,8 @@ async function asRoot(args: string[], params?: Params): Promise<number> {
     }
 }
 
-const isRoot = () => Deno.uid() === 0
+// M20_TEST_ROOT (tests only): a fake board in a folder, nothing to be root for
+const isRoot = () => Deno.uid() === 0 || !!Deno.env.get("M20_TEST_ROOT")
 
 export async function boardStep(args: string[]): Promise<number> {
     const flag = (name: string) => {

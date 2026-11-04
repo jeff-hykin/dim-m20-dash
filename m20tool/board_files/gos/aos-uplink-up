@@ -4,10 +4,12 @@
 // No imports: nothing here may need the network to start. Run by aos-uplink.service (m20tool setup installs both).
 //   aos-uplink-up             apply (root)
 //   aos-uplink-up --dry-run   print what it would do, change nothing
+//   aos-uplink-up --check     read-only: exit 0 if the default route is already exactly what it sets, else 1
 
 const gateway = "10.21.31.103"
 const waitSeconds = 60
 const dryRun = Deno.args.includes("--dry-run")
+const check = Deno.args.includes("--check")
 
 async function run(argv) {
     try {
@@ -31,10 +33,16 @@ async function internalInterface() {
 let dev = ""
 for (let i = 0; i < waitSeconds; i++) {
     dev = await internalInterface()
-    if (dev) {
+    if (dev || check) {
         break
     }
     await new Promise((resolve) => setTimeout(resolve, 1000))
+}
+if (check) {
+    const want = `default via ${gateway} dev ${dev} metric 600`
+    const routes = (await run(["ip", "route", "show", "default"])).out.split("\n").map((line) => line.trim())
+    console.log(dev && routes.includes(want) ? `ok: ${want}` : `differs: want ${want}`)
+    Deno.exit(dev && routes.includes(want) ? 0 : 1)
 }
 if (!dev) {
     console.log(`no 10.21.31.x address after ${waitSeconds}s`)

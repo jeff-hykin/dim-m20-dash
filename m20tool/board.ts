@@ -19,6 +19,8 @@ export type Params = {
     upload?: string
     /** the compiled network-safety's sha256 (this release's) */
     networkSafetySha256?: string
+    /** what the step's check found live (true = that guarded action is needed), so the plan can say what will run */
+    live?: Record<string, boolean>
     /** AOS has internet over wlan0 (GOS's uplink through it is safe) */
     aosWlanOnline?: boolean
 }
@@ -26,15 +28,29 @@ export type Params = {
 export type Action =
     | { kind: "put"; path: string; content: string; mode: number; owner?: "user" }
     | { kind: "block"; path: string; body: string }
-    | { kind: "exec"; argv: string[]; okCodes?: number[]; stdin?: string; shownStdin?: string }
+    | { kind: "exec"; argv: string[]; okCodes?: number[]; stdin?: string; shownStdin?: string; ifChanged?: RegExp }
     | { kind: "do"; text: string; run: () => Promise<void> | void }
 
 const decoder = new TextDecoder()
 
+/** Tests only: M20_TEST_ROOT holds a fake board's filesystem; the board's paths (/etc, /usr, /home, /root, /run, /opt,
+ * /sys, /proc, setup's /tmp uploads) map into it, and absolute commands too (a fake deno, office-nat, ...). */
+const testRoot = Deno.env.get("M20_TEST_ROOT") ?? ""
+const BOARD_PREFIXES = ["/etc/", "/usr/", "/home/", "/root/", "/run/", "/opt/", "/sys/", "/proc", "/tmp/m20tool-upload"]
+export function at(path: string): string {
+    if (!testRoot || path.startsWith(testRoot) || path === Deno.execPath()) {
+        return path
+    }
+    return BOARD_PREFIXES.some((prefix) => path.startsWith(prefix)) ? `${testRoot}${path}` : path
+}
+
+/** the board paths files were written to in this run (perform's daemon-reload / udevadm reload go only if one matches) */
+export const changedPaths: string[] = []
+
 /** A system tool: its exit code and output (never through a shell). */
 export async function exec(argv: string[], stdin?: string) {
     try {
-        const child = new Deno.Command(argv[0], {
+        const child = new Deno.Command(argv[0].startsWith("/") ? at(argv[0]) : argv[0], {
             args: argv.slice(1),
             stdin: stdin === undefined ? "null" : "piped",
             stdout: "piped",
@@ -54,7 +70,7 @@ export async function exec(argv: string[], stdin?: string) {
 
 export function readText(path: string): string | null {
     try {
-        return Deno.readTextFileSync(path)
+        return Deno.readTextFileSync(at(path))
     } catch {
         return null
     }
@@ -62,7 +78,7 @@ export function readText(path: string): string | null {
 
 export const exists = (path: string) => {
     try {
-        Deno.statSync(path)
+        Deno.statSync(at(path))
         return true
     } catch {
         return false
@@ -73,31 +89,37 @@ const stamp = () => new Date().toISOString().replace(/[-:T]/g, "").slice(0, 14)
 
 /** the login user's uid/gid (owner of /home/user) */
 function user() {
-    const info = Deno.statSync("/home/user")
+    const info = Deno.statSync(at("/home/user"))
     return { uid: info.uid!, gid: info.gid! }
 }
 
 /** Installs `content` at `path` (a different existing file is kept as <path>.bak-m20tool-<time>). */
-export function put(path: string, content: string | Uint8Array, mode: number, owner?: "user") {
+export function put(path: string, content: string | Uint8Array, mode: number, owner?: "user"): boolean {
     const bytes = typeof content === "string" ? new TextEncoder().encode(content) : content
-    Deno.mkdirSync(path.replace(/\/[^/]*$/, "") || "/", { recursive: true })
+    Deno.mkdirSync(at(path.replace(/\/[^/]*$/, "") || "/"), { recursive: true })
     let old: Uint8Array | null = null
     try {
-        old = Deno.readFileSync(path)
+        old = Deno.readFileSync(at(path))
     } catch {
         // new
     }
+    if (old && sameBytes(old, bytes) && (Deno.statSync(at(path)).mode! & 0o777) === mode) {
+        // identical: nothing written, no backup
+        return false
+    }
     if (old && !sameBytes(old, bytes)) {
-        Deno.copyFileSync(path, `${path}.bak-m20tool-${stamp()}`)
+        Deno.copyFileSync(at(path), at(`${path}.bak-m20tool-${stamp()}`))
     }
     const temp = `${path}.m20tool-new`
-    Deno.writeFileSync(temp, bytes)
-    Deno.chmodSync(temp, mode)
+    Deno.writeFileSync(at(temp), bytes)
+    Deno.chmodSync(at(temp), mode)
     if (owner) {
         const { uid, gid } = user()
-        Deno.chownSync(temp, uid, gid)
+        Deno.chownSync(at(temp), uid, gid)
     }
-    Deno.renameSync(temp, path)
+    Deno.renameSync(at(temp), at(path))
+    changedPaths.push(path)
+    return true
 }
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i])
@@ -142,14 +164,15 @@ export function putBlock(path: string, body: string) {
     if (next !== text) {
         let mode = 0o644
         try {
-            mode = Deno.statSync(path).mode! & 0o777
+            mode = Deno.statSync(at(path)).mode! & 0o777
         } catch {
             // new
         }
-        Deno.mkdirSync(path.replace(/\/[^/]*$/, ""), { recursive: true })
-        Deno.writeTextFileSync(`${path}.m20tool-new`, next)
-        Deno.chmodSync(`${path}.m20tool-new`, mode)
-        Deno.renameSync(`${path}.m20tool-new`, path)
+        Deno.mkdirSync(at(path.replace(/\/[^/]*$/, "")), { recursive: true })
+        Deno.writeTextFileSync(at(`${path}.m20tool-new`), next)
+        Deno.chmodSync(at(`${path}.m20tool-new`), mode)
+        Deno.renameSync(at(`${path}.m20tool-new`), at(path))
+        changedPaths.push(path)
     }
 }
 
@@ -158,12 +181,18 @@ export function putBlock(path: string, body: string) {
 /** pids whose command line matches `pattern` (from /proc/<pid>/cmdline; never this process) */
 export function processes(pattern: RegExp): number[] {
     const found: number[] = []
-    for (const entry of Deno.readDirSync("/proc")) {
+    let entries: Deno.DirEntry[] = []
+    try {
+        entries = [...Deno.readDirSync(at("/proc"))]
+    } catch {
+        return found
+    }
+    for (const entry of entries) {
         if (!/^\d+$/.test(entry.name) || Number(entry.name) === Deno.pid) {
             continue
         }
         try {
-            const cmdline = Deno.readTextFileSync(`/proc/${entry.name}/cmdline`).replaceAll("\0", " ")
+            const cmdline = Deno.readTextFileSync(at(`/proc/${entry.name}/cmdline`)).replaceAll("\0", " ")
             if (pattern.test(cmdline)) {
                 found.push(Number(entry.name))
             }
@@ -204,7 +233,7 @@ export async function online(): Promise<boolean> {
 /** Extracts a .tgz into `dir`, dropping the first path component; the written paths. */
 export async function untgz(path: string, dir: string): Promise<string[]> {
     const written: string[] = []
-    const file = await Deno.open(path)
+    const file = await Deno.open(at(path))
     const entries = file.readable.pipeThrough(new DecompressionStream("gzip")).pipeThrough(new UntarStream())
     for await (const entry of entries) {
         const relative = entry.path.split("/").slice(1).join("/")
@@ -213,7 +242,7 @@ export async function untgz(path: string, dir: string): Promise<string[]> {
             continue
         }
         const out = `${dir}/${relative}`
-        Deno.mkdirSync(out.replace(/\/[^/]*$/, ""), { recursive: true })
+        Deno.mkdirSync(at(out.replace(/\/[^/]*$/, "")), { recursive: true })
         await Deno.writeFile(out, entry.readable)
         written.push(out)
     }
@@ -236,7 +265,8 @@ export function describe(action: Action): string {
     }
     if (action.kind === "exec") {
         const words = action.argv.map((w) => (/^[\w@%+=:,./-]+$/.test(w) ? w : `'${w}'`)).join(" ")
-        return action.stdin !== undefined ? `${words}   <<< ${JSON.stringify(action.shownStdin ?? MASK)}` : words
+        const shown = action.stdin !== undefined ? `${words}   <<< ${JSON.stringify(action.shownStdin ?? MASK)}` : words
+        return action.ifChanged ? `${shown} (only if a file it covers changed above)` : shown
     }
     return action.text
 }
@@ -248,6 +278,9 @@ export async function perform(actions: Action[], log: (line: string) => void) {
         } else if (action.kind === "block") {
             putBlock(action.path, action.body)
         } else if (action.kind === "exec") {
+            if (action.ifChanged && !changedPaths.some((path) => action.ifChanged!.test(path))) {
+                continue
+            }
             const result = await exec(action.argv, action.stdin)
             const output = [result.stdout, result.stderr].filter(Boolean).join("\n")
             if (!(action.okCodes ?? [0]).includes(result.code)) {

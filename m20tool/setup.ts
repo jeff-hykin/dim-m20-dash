@@ -270,21 +270,25 @@ function boardStepOf(
     params: () => Params,
     extra: { before?: () => Promise<void>; after?: () => Promise<void>; planExtra?: () => string[] } = {},
 ): Step {
+    // what the check found live (which guarded restarts/re-runs are needed), for the plan and the apply
+    let live: Record<string, boolean> | undefined
+    const withLive = () => ({ ...params(), live })
     return {
         title,
         where: board.name,
         check: async () => {
             const result = await boardStep(board, id, "check", params())
+            live = (result.data as { live?: Record<string, boolean> } | undefined)?.live
             return { done: !result.todos.length, detail: result.todos.join("; ") }
         },
         plan: () => [
             ...(extra.planExtra?.() ?? []),
             `on ${board.name} (${describe(board)}), inside m20tool (board-step ${id} apply):`,
-            ...planLines(id, params()).map((line) => `  | ${line}`),
+            ...planLines(id, withLive()).map((line) => `  | ${line}`),
         ],
         apply: async () => {
             await extra.before?.()
-            await boardStep(board, id, "apply", params())
+            await boardStep(board, id, "apply", withLive())
             await extra.after?.()
         },
     }
@@ -769,12 +773,14 @@ async function stages(options: SetupOptions, ssid: string, password: string) {
             ...aosTime,
             check: async () => {
                 const result = await aosTime.check()
-                rootKey = (await boardStep(dog.aos, "aos/time", "check", {})).data as string | undefined
+                rootKey = ((await boardStep(dog.aos, "aos/time", "check", {})).data as { rootKey?: string } | undefined)
+                    ?.rootKey
                 return result
             },
             apply: async () => {
                 await aosTime.apply()
-                rootKey = (await boardStep(dog.aos, "aos/time", "check", {})).data as string | undefined
+                rootKey = ((await boardStep(dog.aos, "aos/time", "check", {})).data as { rootKey?: string } | undefined)
+                    ?.rootKey
             },
         },
         boardStepOf(
