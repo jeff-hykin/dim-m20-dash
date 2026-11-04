@@ -11,21 +11,30 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
     fake), a TCP probe of port 22, the indicators. `fake.ts`: simulated boards whose state changes over time.
   - `blueprint.ts`: blueprint mode (GET active, active/streams, peek, active/modules; motion = M20Connection's RPCs).
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl). `settings.ts`: `<dataDir>/settings.json`.
-- `frontend/`: plain JS + CSS, no build; Desktop's theme tokens only.
+- `frontend/` (React + Vite, like G1 Ctrl and Go2 Ctrl; `frontend/dist` is built and committed so no robot builds it):
+  `src/App.tsx` the page (main view = camera or 3D, panels on the left, command dock, d-pad / phone thumb sticks);
+  `live.ts` the live topics through Desktop's zenoh-gateway (pose from tf/slam_odom, slam_body_points, local_map,
+  command_ready, front/rear cameras) and the fake world used with the fake boards; `drive.ts` the drive loop (a Twist on
+  the blueprint's `tele_cmd_vel` at 20 Hz, gateway deadman, nothing while idle); `scene3d.ts` the three.js view;
+  `camera.ts` JPEG / H.265 decoding; `gamepad.ts` (Go2 Ctrl's), `ThumbStick.tsx` + `stick.ts` (dimos-react's);
+  `dim-app/source/` vendored dim-app (theme, zenoh). Desktop's theme tokens only.
 
 ## Try a change
 
-- `deno task test` (fake ssh, fake boards, a fake dimos gateway: no robot needed).
+- `deno task test` (fake ssh, fake boards, a fake dimos gateway, and the drive loop against a stand-in zenoh client: no
+  robot needed). After a frontend change: `deno task build` (tsc + vite into `frontend/dist`) and commit `dist` too.
 - `deno task fake` → http://localhost:8788 with simulated boards; add `M20_DASH_DESKTOP_URL=http://127.0.0.1:5555`
   to use a running Desktop's dimos gateway (blueprint mode).
 - No blueprint to hand: `deno task fake-gateway` (a stand-in dimos gateway with an M20 blueprint, port 8790) and
-  `deno task demo` (fake boards against it).
+  `deno task demo` (fake boards against it). With the fake boards the page also fakes the robot: a room, a lidar scan,
+  test-card cameras, and a pose the drive moves; nothing goes to zenoh.
 - Installed: edit `~/.dimos/apps/dim-m20-dash`, `nix build .#dimosApp`, then
   `curl -fsS -X POST localhost:5555/gateways/desktop/management/apps/dim-m20-dash/reload`.
 
 ## Rules
 
-- Motion only from a request (a click, an agent call), only through the blueprint. Direct mode has no motion: the
+- Motion only from a request (a click, a held key/stick, an agent call), only through the blueprint. Stand up / lie
+  down / dock always ask first; driving publishes only while an input is held, with the gateway's deadman armed. Direct mode has no motion: the
   M20's own control protocol isn't implemented here, and none should be guessed.
 - On a robot don't build there (no `nix build`, `deno install`): cross build, rsync, hot-load
   ([edge compute](https://github.com/jeff-hykin/dimos-desktop-mirror/blob/main/docs/create-apps/edge-compute.md)).

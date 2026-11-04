@@ -3,7 +3,9 @@
     "tasks": {
         "dev": "deno run -A --watch backend/main.ts",
         "fake": "M20_DASH_SOURCE=fake deno run -A backend/main.ts",
-        "test": "deno test -A backend/",
+        "test": "deno test -A backend/ && deno test -A --no-check frontend/test/",
+        "build": "cd frontend && npm ci && npm run build",
+        "typecheck": "cd frontend && npx tsc --noEmit",
         "check": "deno check backend/main.ts && deno task check-endpoints",
         "check-endpoints": "deno run -A scripts/check_endpoints.ts",
         "fake-gateway": "deno run -A backend/fake_gateway.ts",
@@ -16,7 +18,11 @@
         "include": [
             "backend",
             "scripts",
-            "frontend"
+            "frontend/src",
+            "frontend/test"
+        ],
+        "exclude": [
+            "frontend/src/dim-app"
         ]
     },
     "lint": {
