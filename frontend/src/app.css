@@ -1177,6 +1177,16 @@ body.science .seg .dim-btn.on, body.science .dim-btn.sm.on {
     display: flex;
     flex: none;
 }
+/* under 5 min of recording space: beside Record, never clipped (the other badges give way first) */
+.rec-space {
+    flex: none;
+    cursor: pointer;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.rec-space-line {
+    margin-bottom: 6px;
+}
 /* Go2 Ctrl's literal reds (not the skin's --danger, which is amber in some skins): a recording button reads as one
    in every skin, the same in both apps */
 body.science .rec-btn.dim-btn,

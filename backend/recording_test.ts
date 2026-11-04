@@ -53,6 +53,10 @@ Deno.test("a recording with options: raw live topics, groups, label, folder, spl
             tap: { state: string }
         }
         assertEquals(status.tap.state, "running")
+        const space = (status as unknown as { space: { freeBytes: number; secondsLeft: number; rateSource: string } })
+            .space
+        assert(space.freeBytes > 0 && space.secondsLeft > 0, JSON.stringify(space))
+        assertEquals(space.rateSource, "options", "too early to have measured: the options' estimate")
         assert(status.streams.front_camera.written > 0 && status.streams.front_camera.received > 0)
         assertEquals(status.streams.boards, undefined, "boards unticked")
         const stopped = stopRecording() as { files: string[] }

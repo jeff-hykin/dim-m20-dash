@@ -21,6 +21,9 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl), with the Record options of
     `record_streams.ts` (stream groups, rate caps, label, folder, splitting). The live topics come raw through
     `zenoh_tap.py`, which `tap.ts` runs with DIMOS_APP's `dimosPython` against its `zenohConnect` (subscribe only).
+    `record_space.ts`: minutes of recording left (free bytes on the recordings' disk, by statfs, minus the 1 GB a
+    recording stops itself at, ÷ the measured rate, or an estimate for the Record options from the last recording's
+    per-group rates in `<dataDir>/record_rates.json`); the page warns under 5 min (`frontend/src/record_space.ts`).
     `syslogs.ts`: the recording's system logs (Go2 Ctrl's health.rs for each board, over one more read-only ssh while
     recording: health every 2 s, journal warnings, network-safety, AOS's basic_server log, health dumps). `settings.ts`:
     `<dataDir>/settings.json`.

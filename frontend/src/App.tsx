@@ -7,7 +7,16 @@
 // the live topics (pose, lidar, cameras) and the drive Twist go through Desktop's zenoh-gateway (live.ts).
 //   keyboard: W/S forward·back  A/D turn  Q/E strafe  Shift boost  Space STOP  C front/rear camera  V camera/3D
 import { useCallback, useEffect, useRef, useState } from "react"
-import { type AppState, type Battery, type Board, call, message, type Robot, type Settings } from "./api.ts"
+import {
+    type AppState,
+    type Battery,
+    type Board,
+    call,
+    message,
+    type RecordState,
+    type Robot,
+    type Settings,
+} from "./api.ts"
 import { CameraCanvas, type CameraStats } from "./camera.ts"
 import { type Axes, Drive, type DriveStatus, SPEED_DEFAULTS, SPEED_LIMITS, type Speeds, teleopStream } from "./drive.ts"
 import { GAMEPAD_BINDINGS, GamepadDriver, type GamepadStatus, noPad, type PadLike } from "./gamepad.ts"
@@ -15,6 +24,7 @@ import { Icon } from "./icons.tsx"
 import { type CameraName, type LinkState, Live } from "./live.ts"
 import { createScene3D, type Scene3D } from "./scene3d.ts"
 import { RecordPanel } from "./RecordPanel.tsx"
+import { spaceWarning } from "./record_space.ts"
 import { releaseAllThumbSticks, ThumbStick } from "./ThumbStick.tsx"
 
 const POLL_MS = 1000
@@ -982,6 +992,7 @@ export function App() {
         const timer = setInterval(() => setRecordNow(Date.now()), 1000)
         return () => clearInterval(timer)
     }, [record?.active])
+    const spaceLow = spaceWarning(record?.space, !!record?.active)
     const toggleRecord = async () => {
         setRecordBusy(true)
         try {
@@ -990,7 +1001,11 @@ export function App() {
                 setLastRecording(stopped.file ?? "")
                 showToast(`Saved ${stopped.file ?? "the recording"}`)
             } else {
-                await call("POST", "api/record/start")
+                const started = await call<RecordState>("POST", "api/record/start")
+                const low = spaceWarning(started.space, true)
+                if (low) {
+                    showToast(low.detail)
+                }
             }
         } catch (error) {
             showToast(`Recording: ${message(error)}`)
@@ -1298,6 +1313,20 @@ export function App() {
                 )}
                 <PadChip pad={pad} />
                 <div className="spacer" />
+                {/* under 5 min of recording space (before and while recording): a warning beside Record, on a phone too */}
+                {spaceLow && (
+                    <span
+                        data-ui="record.space_warning"
+                        role="status"
+                        className={`dim-badge pill rec-space ${spaceLow.full ? "danger" : "warn"}`}
+                        title={spaceLow.detail}
+                        onClick={() => setRecordPanel(true)}
+                    >
+                        <span className="dot" />
+                        <span className="hide-phone">{spaceLow.text}</span>
+                        <span className="show-phone">{spaceLow.short}</span>
+                    </span>
+                )}
                 {/* Go2 Ctrl's record control: a solid red split button, Record | ⋯ (Stop · time · size while recording) */}
                 <div className="rec-split">
                     <button
@@ -1305,9 +1334,10 @@ export function App() {
                         data-ui="record"
                         className={`dim-btn sm rec-btn${record?.active ? " on" : ""}`}
                         disabled={recordBusy}
-                        title={record?.active
+                        title={(record?.active
                             ? `Recording to ${record.file}: click to stop and save it`
-                            : "Record to an .mcap: the cameras, lidar, pose, tf, driving, robot status, board stats and system logs (⋯ picks)"}
+                            : "Record to an .mcap: the cameras, lidar, pose, tf, driving, robot status, board stats and system logs (⋯ picks)") +
+                            (spaceLow ? `\n${spaceLow.detail}` : "")}
                         onClick={toggleRecord}
                     >
                         <span className="rec-dot" />

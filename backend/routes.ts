@@ -20,7 +20,7 @@ import { type Mode, settings, updateSettings } from "./settings.ts"
 
 export const INFO: Info = {
     title: "M20 Ctrl",
-    version: "1.1.0",
+    version: "1.2.0",
     description:
         "M20 Ctrl: monitor a Deep Robotics Lynx M20 quadruped's computers (GOS, AOS, NOS) — CPU, temperature, memory, " +
         "network, lidar and dimos — record them, and in blueprint mode watch, record and command the running dimos blueprint",
@@ -53,7 +53,7 @@ function state(withHistory: boolean) {
         directMotion: settings().mode === "direct" ? DIRECT_MOTION : null,
         driving: readiness(robot, settings().mode),
         direct: direct.status,
-        record: recordingStatus(),
+        record: recordingStatus(settings().recordOptions),
         robot: robot.state,
         now,
     }
@@ -305,9 +305,12 @@ export const routes: Route[] = [
         path: "api/record",
         when: "you want to know whether M20 Ctrl is recording, and its size",
         description:
-            "The recording in progress: {active: true, file, path, startedAt (ms), seconds, bytes, messages, topics}; " +
-            "or {active: false}",
-        handler: () => recordingStatus(),
+            "The recording in progress: {active: true, file, path, startedAt (ms), seconds, bytes, messages, topics, " +
+            "space}; or {active: false, space}. space: {freeBytes (on the recordings' disk), reserveBytes (a recording " +
+            "stops itself there), bytesPerSecond, rateSource (measured: this recording's, smoothed; last_recording / " +
+            "options: an estimate for the next one), estimate, secondsLeft (until it would stop itself), low (under 5 " +
+            "min)}",
+        handler: () => recordingStatus(settings().recordOptions),
     },
     {
         method: "POST",

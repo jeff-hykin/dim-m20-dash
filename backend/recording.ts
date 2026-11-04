@@ -16,7 +16,7 @@
 // Started only by a person or an agent (api/record/start); never on its own. It runs until api/record/stop or the app
 // quits; a file a quit or crash left unfinished is finished on the next start (recoverRecordings).
 import { logLine } from "./applog.ts"
-import { recordingsDir } from "./dimos_app.ts"
+import { dataDir, recordingsDir } from "./dimos_app.ts"
 import { type Channel, isFinished, McapWriter, recoverMcap } from "./mcap.ts"
 import {
     DEFAULT_RECORD_OPTIONS,
@@ -26,6 +26,16 @@ import {
     type RecordOptions,
     streamName,
 } from "./record_streams.ts"
+import {
+    diskFree,
+    estimateRate,
+    loadPastRates,
+    type PastRates,
+    RESERVE_BYTES,
+    savePastRates,
+    smooth,
+    space,
+} from "./record_space.ts"
 import { Tap } from "./tap.ts"
 
 // deno-lint-ignore no-explicit-any -- recorded messages are free-form JSON
@@ -62,6 +72,11 @@ type Active = {
     options: RecordOptions
     /** per group: messages written */
     written: Record<string, number>
+    /** per group ("other": /logs, /robot_action): bytes written, for the next recording's estimate */
+    groupBytes: Record<string, number>
+    /** the measured write rate (bytes/s, smoothed) and the sample it was last updated from */
+    rate: number | null
+    rateSample: { at: number; bytes: number }
 }
 
 let active: Active | null = null
@@ -95,7 +110,15 @@ export function record(topic: string, message: unknown, atMs = Date.now()) {
         channel = active.writer.channel(topic, schemaName(topic), { type: "object" })
         active.channels.set(topic, channel)
     }
+    const before = active.writer.bytes
     active.writer.write(channel, BigInt(Math.round(atMs * 1e6)), message)
+    countBytes(group ?? "other", active.writer.bytes - before)
+}
+
+function countBytes(group: string, bytes: number) {
+    if (active) {
+        active.groupBytes[group] = (active.groupBytes[group] ?? 0) + bytes
+    }
 }
 
 /** A typed event on /logs (it also needs to be in the app log: callers do that, in their own words). */
@@ -123,41 +146,48 @@ const tap = new Tap((key, timeNs, payload) => {
         })
         active.channels.set(topic, channel)
     }
+    const before = active.writer.bytes
     active.writer.writeBytes(channel, timeNs, payload)
     const group = GROUP_OF_KEY.get(key)
+    countBytes(group ?? "other", active.writer.bytes - before)
     if (group) {
         active.written[group] = (active.written[group] ?? 0) + 1
     }
 })
 
-/** a recording stops itself when its disk gets down to this (bytes free) */
-const MIN_FREE_BYTES = 1e9
 const DISK_CHECK_MS = 5000
+/** the recordings disk's free space, and when it was read (read again when older than this) */
 let freeBytes: number | null = null
+let freeAt = 0
+const FREE_MAX_AGE_MS = 2000
 
-/** Free space on `dir`'s disk (df -Pk), or null when df can't say. */
-async function diskFree(dir: string): Promise<number | null> {
-    try {
-        const { stdout, success } = await new Deno.Command("df", {
-            args: ["-Pk", dir],
-            stdout: "piped",
-            stderr: "null",
-        }).output()
-        const fields = new TextDecoder().decode(stdout).trim().split("\n").pop()?.split(/\s+/) ?? []
-        return success && fields[3] ? Number(fields[3]) * 1024 : null
-    } catch {
-        return null
-    }
+function readFree(dir: string) {
+    freeBytes = diskFree(dir)
+    freeAt = Date.now()
+    return freeBytes
 }
 
-/** While recording: the disk's free space, and a stop before the recording fills it. */
+/** the bytes/s each group wrote in the last recording that had it: the estimate for the next one */
+let pastRates: PastRates | null = null
+const pastRatesFile = () => Deno.env.get("M20_DASH_RATES_FILE") ?? `${dataDir()}/record_rates.json`
+/** a recording shorter than this says too little about its rate to keep */
+const MIN_SECONDS_FOR_RATES = 10
+
+/** While recording: the disk's free space, the measured rate, and a stop before the recording fills the disk. */
 function watchDisk(started: Active) {
-    const check = async () => {
+    const check = () => {
         if (active !== started) {
             return
         }
-        freeBytes = await diskFree(started.dir)
-        if (active === started && freeBytes !== null && freeBytes < MIN_FREE_BYTES) {
+        readFree(started.dir)
+        const now = Date.now()
+        const bytes = started.doneBytes + started.writer.bytes
+        const dt = (now - started.rateSample.at) / 1000
+        if (dt >= 1) {
+            started.rate = smooth(started.rate, (bytes - started.rateSample.bytes) / dt, dt)
+            started.rateSample = { at: now, bytes }
+        }
+        if (freeBytes !== null && freeBytes < RESERVE_BYTES) {
             logLine(`recording: stopped, the disk is down to ${(freeBytes / 1e9).toFixed(2)} GB free`)
             recordLog({ type: "recording_disk_full", freeBytes })
             stopRecording()
@@ -166,6 +196,37 @@ function watchDisk(started: Active) {
         setTimeout(check, DISK_CHECK_MS)
     }
     check()
+}
+
+/**
+ * How long the recordings disk lasts: this recording's measured rate, or (none running, or too early to have
+ * measured) the estimate for `options`.
+ */
+export function recordingSpace(options: RecordOptions = active?.options ?? DEFAULT_RECORD_OPTIONS, dir?: string) {
+    const where = dir ?? active?.dir ?? recordingsDir()
+    if (Date.now() - freeAt > FREE_MAX_AGE_MS) {
+        readFree(where)
+    }
+    if (active?.rate != null) {
+        return space(freeBytes, active.rate, "measured")
+    }
+    pastRates ??= loadPastRates(pastRatesFile())
+    const estimate = estimateRate(options, pastRates)
+    return space(freeBytes, estimate.bytesPerSecond, estimate.source)
+}
+
+/** At a stop: keep each group's rate (a long enough recording only) for the next estimate. */
+function keepRates(ended: Active) {
+    const seconds = (Date.now() - ended.startedAt) / 1000
+    if (seconds < MIN_SECONDS_FOR_RATES) {
+        return
+    }
+    pastRates ??= loadPastRates(pastRatesFile())
+    for (const [group, bytes] of Object.entries(ended.groupBytes)) {
+        const maxHz = group === "other" ? null : ended.options.streams[group as keyof RecordOptions["streams"]]?.maxHz
+        pastRates[group as keyof PastRates] = { bytesPerSecond: bytes / seconds, maxHz: maxHz ?? null }
+    }
+    savePastRates(pastRatesFile(), pastRates)
 }
 
 /** A new part once the current one is past the options' minutes or megabytes. */
@@ -211,9 +272,10 @@ function fileName(label: string, now = new Date()) {
     return `${date}_${time}_m20_${host}${label ? `_${label}` : ""}.mcap`
 }
 
-export function recordingStatus() {
+/** `options`: the Record options the next recording would use (for the estimate while none runs) */
+export function recordingStatus(options?: RecordOptions) {
     if (!active) {
-        return { active: false }
+        return { active: false, space: recordingSpace(options) }
     }
     const streams: Record<string, { written: number; received: number; skipped: number; dropped: number }> = {}
     for (const group of GROUPS) {
@@ -240,6 +302,8 @@ export function recordingStatus() {
         messages: active.doneMessages + active.writer.messages,
         dropped: Object.values(streams).reduce((sum, s) => sum + s.dropped, 0),
         freeBytes,
+        bytesPerSecond: active.rate,
+        space: recordingSpace(),
         topics: [...active.channels.keys()].sort(),
         streams,
         tap: tap.state,
@@ -276,9 +340,11 @@ export function startRecording(root = recordingsDir(), context: Json = {}, optio
         channels: new Map(),
         options,
         written: {},
+        groupBytes: {},
+        rate: null,
+        rateSample: { at: now, bytes: 0 },
     }
     logLine(`recording started: ${writer.path}`)
-    freeBytes = null
     watchDisk(active)
     recordLog({ type: "recording_started", file, options, ...context })
     tap.start(
@@ -303,6 +369,7 @@ export function stopRecording() {
     tap.stop()
     listeners.forEach((listener) => listener(null))
     active = null
+    keepRates(ending)
     ending.writer.close()
     logLine(
         `recording stopped: ${ending.writer.path} (${ending.writer.messages} messages, ${ending.writer.bytes} bytes)`,

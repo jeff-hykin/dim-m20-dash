@@ -1,6 +1,6 @@
 title: M20 Ctrl
 spec-version: v1.6
-version: 0.3.6
+version: 0.3.7
 uses:
   '@dimos-gateway':
     - GET history/recordings
@@ -25,7 +25,7 @@ provides:
   info:
     x-when: 'you need to monitor a Deep Robotics M20 quadruped''s computers, record them, or command it through a blueprint'
     title: M20 Ctrl
-    version: 1.1.0
+    version: 1.2.0
     description: >-
       M20 Ctrl: monitor a Deep Robotics Lynx M20 quadruped's computers (GOS, AOS, NOS) — CPU, temperature, memory,
       network, lidar and dimos — record them, and in blueprint mode watch, record and command the running dimos
@@ -226,8 +226,10 @@ provides:
     /api/record:
       get:
         description: >-
-          The recording in progress: {active: true, file, path, startedAt (ms), seconds, bytes, messages, topics}; or
-          {active: false}
+          The recording in progress: {active: true, file, path, startedAt (ms), seconds, bytes, messages, topics,
+          space}; or {active: false, space}. space: {freeBytes (on the recordings' disk), reserveBytes (a recording
+          stops itself there), bytesPerSecond, rateSource (measured: this recording's, smoothed; last_recording /
+          options: an estimate for the next one), estimate, secondsLeft (until it would stop itself), low (under 5 min)}
         x-when: 'you want to know whether M20 Ctrl is recording, and its size'
     /api/record/start:
       post:

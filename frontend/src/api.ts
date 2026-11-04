@@ -61,10 +61,26 @@ export type Blueprint = {
 
 export type StreamCounts = { written: number; received: number; skipped: number; dropped: number }
 
+/** how long the recordings' disk lasts (backend/record_space.ts) */
+export type RecordSpace = {
+    freeBytes: number | null
+    /** a recording stops itself when the disk is down to this */
+    reserveBytes: number
+    bytesPerSecond: number | null
+    /** measured: this recording's own rate (smoothed); last_recording / options: an estimate for the next one */
+    rateSource: "measured" | "last_recording" | "options" | null
+    estimate: boolean
+    /** seconds until a recording would stop itself (null: unknown) */
+    secondsLeft: number | null
+    /** under 5 minutes */
+    low: boolean
+}
+
 export type RecordState =
-    | { active: false }
+    | { active: false; space?: RecordSpace }
     | {
         active: true
+        space?: RecordSpace
         file: string
         files: string[]
         startedAt: number
