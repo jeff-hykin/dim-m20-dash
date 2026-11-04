@@ -1,4 +1,5 @@
-// A camera onto a canvas: JPEG CompressedImage frames through createImageBitmap (a frame still decoding makes the next
+// A camera onto a <video> or a canvas: the gateway's video track (a MediaStream) plays in the <video>; JPEG
+// CompressedImage frames (the fake cameras) through createImageBitmap (a frame still decoding makes the next
 // one wait, then only the newest is drawn), H.265 / H.264 CompressedVideo (Annex B) through WebCodecs, starting at a
 // keyframe. Returns the stats the HUD shows.
 import type { CameraFrame } from "./live.ts"
@@ -7,7 +8,7 @@ export type CameraStats = {
     fps: number
     width: number
     height: number
-    kind: "jpeg" | "video" | null
+    kind: "stream" | "jpeg" | "video" | null
     error: string | null
 }
 
@@ -33,7 +34,7 @@ const isKey = (data: Uint8Array, hevc: boolean) =>
 export class CameraCanvas {
     stats: CameraStats = { fps: 0, width: 0, height: 0, kind: null, error: null }
     #frames: number[] = []
-    #pending: CameraFrame | null = null
+    #pending: Extract<CameraFrame, { kind: "jpeg" }> | null = null
     #decoding = false
     #decoder: VideoDecoder | null = null
     #codec = ""
@@ -41,13 +42,28 @@ export class CameraCanvas {
     #timestamp = 0
     #closed = false
 
-    constructor(readonly canvas: HTMLCanvasElement, readonly onStats: (stats: CameraStats) => void) {}
+    #stream: MediaStream | null = null
+
+    constructor(
+        readonly canvas: HTMLCanvasElement,
+        readonly video: HTMLVideoElement,
+        readonly onStats: (stats: CameraStats) => void,
+    ) {
+        this.#show("canvas")
+    }
+
+    #show(which: "canvas" | "video") {
+        this.canvas.style.display = which === "canvas" ? "" : "none"
+        this.video.style.display = which === "video" ? "" : "none"
+    }
 
     push(frame: CameraFrame) {
         if (this.#closed) {
             return
         }
-        if (frame.kind === "jpeg") {
+        if (frame.kind === "stream") {
+            this.#playStream(frame.stream)
+        } else if (frame.kind === "jpeg") {
             this.#pending = frame
             if (!this.#decoding) {
                 this.#drawJpeg()
@@ -57,7 +73,29 @@ export class CameraCanvas {
         }
     }
 
-    #drew(width: number, height: number, kind: "jpeg" | "video") {
+    /** the track plays in the <video>; each frame it paints counts toward fps */
+    #playStream(stream: MediaStream) {
+        if (stream === this.#stream) {
+            return
+        }
+        this.#stream = stream
+        this.video.srcObject = stream
+        this.video.play().catch(() => {})
+        this.#show("video")
+        const counted = this.video
+        const onFrame = () => {
+            if (this.#closed || counted.srcObject !== stream) {
+                return
+            }
+            this.#drew(counted.videoWidth, counted.videoHeight, "stream")
+            counted.requestVideoFrameCallback(onFrame)
+        }
+        if ("requestVideoFrameCallback" in counted) {
+            counted.requestVideoFrameCallback(onFrame)
+        }
+    }
+
+    #drew(width: number, height: number, kind: "stream" | "jpeg" | "video") {
         const now = performance.now()
         this.#frames.push(now)
         while (this.#frames.length && now - this.#frames[0] > 2000) {
@@ -78,6 +116,7 @@ export class CameraCanvas {
     }
 
     #draw(image: CanvasImageSource, width: number, height: number) {
+        this.#show("canvas")
         if (this.canvas.width !== width || this.canvas.height !== height) {
             this.canvas.width = width
             this.canvas.height = height
@@ -158,5 +197,7 @@ export class CameraCanvas {
         if (this.#decoder && this.#decoder.state !== "closed") {
             this.#decoder.close()
         }
+        this.video.pause()
+        this.video.srcObject = null
     }
 }

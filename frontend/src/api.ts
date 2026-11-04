@@ -63,6 +63,44 @@ export type RecordState =
     | { active: false }
     | { active: true; file: string; startedAt: number; seconds: number; bytes: number; messages: number }
 
+export type Battery = { level: number; voltage: number; celsius: number; charging: boolean; present: boolean }
+/** the M20's own status (backend/robot.ts: basic_server's reports, heartbeats only) */
+export type Robot = {
+    link: "connecting" | "up" | "down" | "off" | "error"
+    host: string
+    source: "udp" | "fake"
+    error: string | null
+    reportAt: number | null
+    basic: {
+        motion: number
+        motionName: string
+        gait: number
+        gaitName: string
+        charge: number
+        chargeName: string
+        hardEstop: boolean
+        usage: string
+        sleep: string
+        singleBattery: boolean
+        version: string | null
+    } | null
+    motion: {
+        roll: number
+        pitch: number
+        yaw: number
+        height: number
+        vx: number
+        vy: number
+        wz: number
+        remainKm: number
+    } | null
+    battery: { left: Battery; right: Battery } | null
+    joints: { joint: string; motor: number | null; driver: number | null }[]
+    hottestMotor: { joint: string; celsius: number } | null
+    hottestDriver: { joint: string; celsius: number } | null
+    errors: { code: number; hex: string; name: string; component: number; parts: string[] }[]
+}
+
 export type AppState = {
     mode: "blueprint" | "direct"
     source: "ssh" | "fake"
@@ -70,6 +108,7 @@ export type AppState = {
     blueprint: Blueprint | null
     directMotion: string | null
     record: RecordState
+    robot: Robot
     now: number
 }
 

@@ -30,6 +30,8 @@ const MAX_MAP_POINTS = 150_000
 export type Pose = { x: number; y: number; z: number; qx: number; qy: number; qz: number; qw: number; at: number }
 export type Cloud = { xyz: Float32Array; count: number; at: number }
 export type CameraFrame =
+    /** the gateway's video track of the JPEG topic (what the Controller shows: re-encoded to H.264, paced to the link) */
+    | { kind: "stream"; stream: MediaStream }
     | { kind: "jpeg"; data: Uint8Array; stamp: number | null }
     | { kind: "video"; format: string; data: Uint8Array; stamp: number | null }
 export type LinkState = "off" | "connecting" | "connected" | "degraded" | "lost"
@@ -241,10 +243,20 @@ export class Live {
         const start = () => {
             const topics = cameraTopics(camera)
             const stops = [
-                this.#sub(topics.jpeg, (message) => {
-                    this.rates.camera.tick()
-                    onFrame({ kind: "jpeg", data: message.data, stamp: stampOf(message.header) })
-                }),
+                // not the JPEGs themselves (~120 KB each over a data channel: 2-3 fps on a phone over Tailscale) but the
+                // gateway's video track of them, as the Controller does (core/video.ts): its "dimos_lcm_compressed_image"
+                // encoding re-encodes to H.264, sized and paced to the link, and the browser plays it in a <video>
+                this.#zenoh!.subscribe(
+                    topics.jpeg,
+                    { delivery: "latest", encoding: "dimos_lcm_compressed_image", bandwidthPriority: 2 },
+                    (message) => {
+                        this.rates.camera.tick()
+                        const stream = (message as { mediaStream?: MediaStream }).mediaStream
+                        if (stream) {
+                            onFrame({ kind: "stream", stream })
+                        }
+                    },
+                ),
                 this.#sub(topics.video, (message) => {
                     this.rates.camera.tick()
                     onFrame({

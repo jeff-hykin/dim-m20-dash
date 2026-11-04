@@ -1,12 +1,13 @@
 // M20 Ctrl, laid out like its siblings G1 Ctrl and Go2 Ctrl: the main view (a camera, or the 3D view of the lidar and
 // the robot's pose) fills the stage; the board stats, the blueprint and the other view float over it on the left; the
-// commands sit in a dock at the bottom; STOP and Record in the top bar. Driving: keyboard (W/S A/D Q/E, Shift boost,
+// commands sit in a dock at the bottom; STOP and Record in the top bar. Nothing sits over the video: it has its own box
+// (between the panels and the d-pad column on a desktop, between the commands and the thumb sticks on a phone). Driving: keyboard (W/S A/D Q/E, Shift boost,
 // Space STOP), the on-screen pad (desktop) or two thumb sticks (phone), and a gamepad, all through drive.ts.
 // Board stats, recording, the blueprint and stand / lie down / dock come from the backend (api.ts → backend/routes.ts);
 // the live topics (pose, lidar, cameras) and the drive Twist go through Desktop's zenoh-gateway (live.ts).
 //   keyboard: W/S forward·back  A/D turn  Q/E strafe  Shift boost  Space STOP  C front/rear camera  V camera/3D
 import { useCallback, useEffect, useRef, useState } from "react"
-import { type AppState, type Board, call, message, type Settings } from "./api.ts"
+import { type AppState, type Battery, type Board, call, message, type Robot, type Settings } from "./api.ts"
 import { CameraCanvas, type CameraStats } from "./camera.ts"
 import { type Axes, Drive, type DriveStatus, SPEED_DEFAULTS, SPEED_LIMITS, type Speeds, teleopStream } from "./drive.ts"
 import { GAMEPAD_BINDINGS, GamepadDriver, type GamepadStatus, noPad, type PadLike } from "./gamepad.ts"
@@ -82,6 +83,135 @@ const MOTIONS: Motion[] = [
             "facing it with both reflectors in view (it can't find the dock from elsewhere).",
     },
 ]
+
+/** motor temperature levels (G1 Ctrl's): warm from 60 °C, hot (the overheat warning) from 75 °C */
+const TEMP_WARM = 60
+const TEMP_HOT = 75
+/** battery levels: warn at 30 %, danger at 15 % */
+const BATTERY_WARN = 30
+const BATTERY_LOW = 15
+/** the vendor's error codes that mean motors or their drivers are too hot (backend/robot.ts OVERHEAT_ERRORS) */
+const OVERHEAT_ERRORS = new Set([0x8001, 0x8002, 0x8003, 0x8007, 0x8030])
+const LEGS = [["LeftFront", "FL"], ["RightFront", "FR"], ["LeftBack", "BL"], ["RightBack", "BR"]] as const
+const JOINT_COLUMNS = ["HipX", "HipY", "Knee", "Wheel"] as const
+const tempTone = (celsius: number | null | undefined) =>
+    celsius == null ? "" : celsius >= TEMP_HOT ? "danger" : celsius >= TEMP_WARM ? "warn" : "ok"
+const batteryTone = (level: number) => (level <= BATTERY_LOW ? "danger" : level <= BATTERY_WARN ? "warn" : "ok")
+/** "LeftFrontKnee" → "front-left knee" */
+const jointName = (joint: string) =>
+    joint.replace(
+        /^(Left|Right)(Front|Back)(.*)$/,
+        (_, side: string, end: string, part: string) =>
+            `${end.toLowerCase()}-${side.toLowerCase()} ${
+                part.replace("HipX", "hip (side)").replace("HipY", "hip").toLowerCase()
+            }`,
+    )
+
+function BatteryRow({ label, battery }: { label: string; battery: Battery }) {
+    if (!battery.present) {
+        return (
+            <>
+                <span className="k">{label}</span>
+                <span className="v muted">empty bay</span>
+            </>
+        )
+    }
+    return (
+        <>
+            <span className="k">{label}</span>
+            <span className={`v ${batteryTone(battery.level)}`}>
+                {battery.level}% · {battery.voltage} V ·{" "}
+                {battery.celsius.toFixed(0)}°C{battery.charging ? " · charging" : ""}
+            </span>
+        </>
+    )
+}
+
+/** The M20's own status: motion, gait, charging, batteries, every joint's motor temperature, errors. */
+function RobotCard({ robot }: { robot: Robot }) {
+    const b = robot.basic
+    const m = robot.motion
+    if (robot.link !== "up" && !b) {
+        return (
+            <div className="note">
+                {robot.link === "error"
+                    ? robot.error
+                    : robot.link === "down"
+                    ? `No status reports from basic_server (${robot.host}) — is AOS up?`
+                    : `Waiting for basic_server's status reports (${robot.host})…`}
+            </div>
+        )
+    }
+    const deg = (rad: number) => `${(rad * 180 / Math.PI).toFixed(1)}°`
+    return (
+        <>
+            {robot.link !== "up" && <div className="note error">Status reports stopped: these are the last ones.</div>}
+            <div className="kv">
+                <span className="k">motion</span>
+                <span className={`v${b?.hardEstop || b?.motion === 2 ? " danger" : ""}`}>
+                    {b?.hardEstop ? "HARD E-STOP" : b?.motionName ?? "–"}
+                </span>
+                <span className="k">gait</span>
+                <span className="v">{b?.gaitName ?? "–"}</span>
+                <span className="k">control mode</span>
+                <span className="v">{b?.usage ?? "–"}</span>
+                <span className="k">charging</span>
+                <span className={`v${b?.charge === 4 ? " danger" : ""}`}>{b?.chargeName ?? "–"}</span>
+                {robot.battery && <BatteryRow label="battery L" battery={robot.battery.left} />}
+                {robot.battery && <BatteryRow label="battery R" battery={robot.battery.right} />}
+                <span className="k">height</span>
+                <span className="v">{m ? `${m.height.toFixed(2)} m` : "–"}</span>
+                <span className="k">roll · pitch</span>
+                <span className="v">{m ? `${deg(m.roll)} · ${deg(m.pitch)}` : "–"}</span>
+                <span className="k">speed</span>
+                <span className="v">{m ? `${m.vx.toFixed(2)} m/s · ${m.wz.toFixed(2)} rad/s` : "–"}</span>
+                <span className="k">hottest driver</span>
+                <span className={`v ${tempTone(robot.hottestDriver?.celsius)}`}>
+                    {robot.hottestDriver ? `${robot.hottestDriver.celsius.toFixed(0)}°C` : "–"}
+                </span>
+            </div>
+            {robot.joints.length > 0 && (
+                <div className="motors" title="each joint's motor temperature (°C); hover for its driver's">
+                    <span />
+                    {JOINT_COLUMNS.map((c) => (
+                        <span key={c} className="head">
+                            {c === "Knee" || c === "Wheel" ? c.toLowerCase() : c.replace("Hip", "hip ")}
+                        </span>
+                    ))}
+                    {LEGS.map(([leg, short]) => [
+                        <span key={leg} className="head">{short}</span>,
+                        ...JOINT_COLUMNS.map((column) => {
+                            const joint = robot.joints.find((j) =>
+                                j.joint === `${leg}${column}`
+                            )
+                            return (
+                                <span
+                                    key={`${leg}${column}`}
+                                    className={`cell ${tempTone(joint?.motor)}`}
+                                    title={`${jointName(`${leg}${column}`)}: motor ${
+                                        joint?.motor?.toFixed(1) ?? "?"
+                                    }°C, driver ${joint?.driver?.toFixed(1) ?? "?"}°C`}
+                                >
+                                    {joint?.motor != null ? joint.motor.toFixed(0) : "–"}
+                                </span>
+                            )
+                        }),
+                    ])}
+                </div>
+            )}
+            {robot.errors.length > 0 && (
+                <div className="errors">
+                    {robot.errors.map((e) => (
+                        <div key={`${e.code}-${e.component}`} className="robot-error">
+                            <span className="dim-mono">{e.hex}</span> {e.name}
+                            {e.parts.length ? ` (${e.parts.map(jointName).join(", ")})` : ""}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </>
+    )
+}
 
 const LIGHTS = [["network", "Network"], ["stats", "Stats"], ["lidar", "Lidar"], ["dimos", "dimos"]] as const
 
@@ -260,6 +390,8 @@ export function App() {
     const [points, setPoints] = useState(0)
     const [busy, setBusy] = useState<string | null>(null)
     const [lastRecording, setLastRecording] = useState("")
+    /** the overheat warning, acknowledged until the motors are back under TEMP_WARM and no overheat error remains */
+    const [overheatDismissed, setOverheatDismissed] = useState(false)
     const [settingsForm, setSettingsForm] = useState({ source: "ssh", boards: "", note: "" })
 
     const live = useRef<Live>(null as unknown as Live)
@@ -270,6 +402,8 @@ export function App() {
     stateRef.current = state
     const mainCam = useRef<HTMLCanvasElement>(null)
     const pipCam = useRef<HTMLCanvasElement>(null)
+    const mainVideo = useRef<HTMLVideoElement>(null)
+    const pipVideo = useRef<HTMLVideoElement>(null)
     const mainMap = useRef<HTMLCanvasElement>(null)
     const pipMap = useRef<HTMLCanvasElement>(null)
     const scene = useRef<Scene3D | null>(null)
@@ -277,6 +411,7 @@ export function App() {
     const hintAt = useRef(0)
     const keys = useRef(new Set<string>())
     const topbar = useRef<HTMLDivElement>(null)
+    const dock = useRef<HTMLDivElement>(null)
 
     const showToast = useCallback((text: string) => {
         setToast(text)
@@ -366,13 +501,14 @@ export function App() {
 
     // ── the camera: on the main canvas or the corner card ──
     const camCanvas = view.main === "camera" ? mainCam : pipCam
+    const camVideo = view.main === "camera" ? mainVideo : pipVideo
     const camShown = view.main === "camera" || !pipCollapsed
     useEffect(() => {
-        if (!camShown || !camCanvas.current) {
+        if (!camShown || !camCanvas.current || !camVideo.current) {
             return
         }
         const canvas = camCanvas.current
-        const decoder = new CameraCanvas(canvas, setCameraStats)
+        const decoder = new CameraCanvas(canvas, camVideo.current, setCameraStats)
         setCameraStats({ fps: 0, width: 0, height: 0, kind: null, error: null })
         const stop = live.current.watchCamera(view.camera, (frame) => decoder.push(frame))
         return () => {
@@ -610,13 +746,14 @@ export function App() {
 
     // the bar wraps on a phone: the dock and the tools under it follow its height
     useEffect(() => {
-        const sync = () =>
-            document.documentElement.style.setProperty(
-                "--topbar-h",
-                Math.ceil(topbar.current!.getBoundingClientRect().height) + "px",
-            )
+        const sync = () => {
+            const root = document.documentElement.style
+            root.setProperty("--topbar-h", Math.ceil(topbar.current!.getBoundingClientRect().height) + "px")
+            root.setProperty("--dock-h", Math.ceil(dock.current!.getBoundingClientRect().height) + "px")
+        }
         const observer = new ResizeObserver(sync)
         observer.observe(topbar.current!)
+        observer.observe(dock.current!)
         sync()
         return () => observer.disconnect()
     }, [])
@@ -701,6 +838,21 @@ export function App() {
             `Waiting for the ${view.camera} camera (dimos/${view.camera}_camera_image, JPEG, or dimos/${view.camera}_camera, H.265)…`
     const watched = new Set(settings?.blueprintStreams ?? [])
     const hotBoard = state?.boards.some((b) => b.indicators.network.level === "bad")
+    const robot = state?.robot ?? null
+    const robotUp = robot?.link === "up"
+    const hotMotor = robotUp ? robot?.hottestMotor ?? null : null
+    const packs = robot?.battery ? [robot.battery.left, robot.battery.right].filter((p) => p.present) : []
+    const lowestPack = packs.length ? Math.min(...packs.map((p) => p.level)) : null
+    const charging = robot?.basic?.charge === 2 || packs.some((p) => p.charging)
+    const estop = robotUp && (robot?.basic?.hardEstop || robot?.basic?.motion === 2)
+    const overheatErrors = robotUp ? (robot?.errors ?? []).filter((e) => OVERHEAT_ERRORS.has(e.code)) : []
+    const overheating = (hotMotor?.celsius ?? 0) >= TEMP_HOT || overheatErrors.length > 0
+    const cooled = (hotMotor?.celsius ?? 0) < TEMP_WARM && overheatErrors.length === 0
+    useEffect(() => {
+        if (cooled) {
+            setOverheatDismissed(false)
+        }
+    }, [cooled])
 
     const cameraSwitch = (
         <div className="cam-switch seg" role="group" aria-label="camera">
@@ -750,11 +902,10 @@ export function App() {
         <div className={`stage${fake ? " fake" : ""}`}>
             {/* the main view */}
             <div className={`main-view ${view.main}${view.main === "camera" && cameraLive ? " live" : ""}`}>
-                <canvas
-                    ref={mainCam}
-                    className="cam-canvas"
-                    style={{ display: view.main === "camera" ? undefined : "none" }}
-                />
+                <div className="cam-box" style={{ display: view.main === "camera" ? undefined : "none" }}>
+                    <video ref={mainVideo} className="cam-video" autoPlay muted playsInline disablePictureInPicture />
+                    <canvas ref={mainCam} className="cam-canvas" />
+                </div>
                 <canvas
                     ref={mainMap}
                     className="map-canvas"
@@ -787,7 +938,12 @@ export function App() {
                         <span className="dim-title name">M20 Ctrl</span>
                     </div>
                 )}
-                <div className={`dim-badge pill ${linkTone}`} title="the live topics (Desktop's zenoh-gateway)">
+                <div
+                    className={`dim-badge pill ${linkTone}`}
+                    title={fake
+                        ? "Simulated: fake boards and a simulated robot (Settings → source). Nothing goes to the M20."
+                        : "the live topics (Desktop's zenoh-gateway)"}
+                >
                     <span className="dot" />
                     <span>{linkLabel}</span>
                 </div>
@@ -812,6 +968,49 @@ export function App() {
                     </div>
                 )}
                 {dryRun && <span className="dim-badge warn">Dry run</span>}
+                {estop && (
+                    <span
+                        className="dim-badge pill danger"
+                        title="the M20 reports an e-stop: it won't move until it's released"
+                    >
+                        <span className="dot" />
+                        {robot?.basic?.hardEstop ? "HARD E-STOP" : "Soft e-stop"}
+                    </span>
+                )}
+                {lowestPack !== null && robotUp && (
+                    <span
+                        className={`dim-badge dim-mono pill ${batteryTone(lowestPack)}`}
+                        title={`battery: ${
+                            robot!.battery!.left.present ? `left ${robot!.battery!.left.level}%` : "left bay empty"
+                        }, ${
+                            robot!.battery!.right.present ? `right ${robot!.battery!.right.level}%` : "right bay empty"
+                        }${charging ? ", charging" : ""}`}
+                    >
+                        <span className="dot" />
+                        {packs.length === 2
+                            ? (
+                                <>
+                                    <span className="hide-phone">
+                                        {robot!.battery!.left.level}% · {robot!.battery!.right.level}%
+                                    </span>
+                                    <span className="show-phone">{lowestPack}%</span>
+                                </>
+                            )
+                            : `${lowestPack}%`}
+                        {charging ? " ⚡" : ""}
+                    </span>
+                )}
+                {hotMotor && (
+                    <span
+                        className={`dim-badge dim-mono pill hide-phone ${tempTone(hotMotor.celsius)}`}
+                        title={`the hottest motor: ${
+                            jointName(hotMotor.joint)
+                        } (warm from ${TEMP_WARM}°C, hot from ${TEMP_HOT}°C)`}
+                    >
+                        <span className="dot" />
+                        {hotMotor.celsius.toFixed(0)}°C
+                    </span>
+                )}
                 <PadChip pad={pad} />
                 <div className="spacer" />
                 <button
@@ -849,6 +1048,19 @@ export function App() {
 
             <div className={`left-col${panelsOpen ? " open" : ""}`}>
                 <div className="rail">
+                    <Card
+                        title="Robot"
+                        meta={robot?.link === "up"
+                            ? robot.basic?.motionName
+                            : robot?.link === "down"
+                            ? "no reports"
+                            : robot?.link ?? undefined}
+                        collapsed={collapsed.has("Robot")}
+                        onToggle={() => toggleCard("Robot")}
+                    >
+                        {robot ? <RobotCard robot={robot} /> : <div className="muted">Waiting for the backend…</div>}
+                    </Card>
+
                     <Card
                         title="Boards"
                         meta={hotBoard ? "unreachable" : undefined}
@@ -908,7 +1120,11 @@ export function App() {
                             <span className="v">
                                 {cameraLive
                                     ? `${cameraStats.fps} fps · ${cameraStats.width}×${cameraStats.height} ${
-                                        cameraStats.kind === "jpeg" ? "JPEG" : "H.265"
+                                        cameraStats.kind === "jpeg"
+                                            ? "JPEG"
+                                            : cameraStats.kind === "stream"
+                                            ? "video"
+                                            : "H.265"
                                     }`
                                     : "–"}
                             </span>
@@ -1085,11 +1301,17 @@ export function App() {
                         className="map-canvas"
                         style={{ display: view.main === "camera" ? undefined : "none" }}
                     />
-                    <canvas
-                        ref={pipCam}
-                        className="cam-canvas"
-                        style={{ display: view.main === "map" ? undefined : "none" }}
-                    />
+                    <div className="cam-box" style={{ display: view.main === "map" ? undefined : "none" }}>
+                        <video
+                            ref={pipVideo}
+                            className="cam-video"
+                            autoPlay
+                            muted
+                            playsInline
+                            disablePictureInPicture
+                        />
+                        <canvas ref={pipCam} className="cam-canvas" />
+                    </div>
                 </div>
             </div>
 
@@ -1180,6 +1402,24 @@ export function App() {
                     onMove={(x, y) => driveInput("left-stick", { forward: y, strafe: -x })}
                 />
                 <div className="stick-middle">
+                    {/* the velocity, between the thumbs (never over the video) */}
+                    <div
+                        className={`vel-mini dim-mono${moving ? " on" : ""}`}
+                        title={target.kind === "none" ? target.why : ""}
+                    >
+                        <span>vx {twist.x.toFixed(2)}</span>
+                        <span>vy {twist.y.toFixed(2)}</span>
+                        <span>ω {twist.yaw.toFixed(2)}</span>
+                        <span className="muted">
+                            {dryRun
+                                ? "dry run"
+                                : target.kind === "topic"
+                                ? target.stream
+                                : target.kind === "fake"
+                                ? "simulated"
+                                : "can't drive"}
+                        </span>
+                    </div>
                     <button
                         type="button"
                         className="dim-btn sm cam-flip"
@@ -1211,7 +1451,17 @@ export function App() {
                 />
             </div>
 
-            <div className="dock">
+            <div className="dock" ref={dock}>
+                {robotUp && robot?.basic && (
+                    <span
+                        className={`dim-badge mode-badge hide-phone ${
+                            estop ? "danger" : robot.basic.motion === 1 || robot.basic.motion === 17 ? "ok" : ""
+                        }`}
+                        title="the M20's motion state and gait (its own status report)"
+                    >
+                        {robot.basic.motionName} · {robot.basic.gaitName}
+                    </span>
+                )}
                 {MOTIONS.map((m) => {
                     const blocked = motionBlocked(m)
                     return (
@@ -1235,6 +1485,57 @@ export function App() {
             </div>
 
             <div className={"scrim" + (panelsOpen ? " open" : "")} onClick={() => setPanelsOpen(false)} />
+
+            {overheating && !overheatDismissed && (
+                <div className="overheat-back" role="alertdialog" aria-labelledby="overheat-title">
+                    <div className="overheat dim-panel glass">
+                        <header id="overheat-title">
+                            <Icon name="warn" size={20} />
+                            Warning: M20 overheating
+                        </header>
+                        <p>
+                            {hotMotor && hotMotor.celsius >= TEMP_HOT
+                                ? `The ${jointName(hotMotor.joint)} motor is at ${hotMotor.celsius.toFixed(0)}°C. `
+                                : ""}
+                            {overheatErrors.map((e) =>
+                                `${e.name[0].toUpperCase()}${e.name.slice(1)}${
+                                    e.parts.length ? ` (${e.parts.map(jointName).join(", ")})` : ""
+                                }`
+                            )
+                                .join("; ")}
+                            {overheatErrors.length ? ". " : ""}
+                            Have the robot lie down until it cools below {TEMP_WARM}°C.
+                        </p>
+                        <footer>
+                            <button
+                                type="button"
+                                className="dim-btn"
+                                data-ui="overheat.dismiss"
+                                onClick={() =>
+                                    setOverheatDismissed(true)}
+                            >
+                                Dismiss
+                            </button>
+                            <button
+                                type="button"
+                                className="dim-btn danger"
+                                data-ui="overheat.lie_down"
+                                autoFocus
+                                onClick={() => {
+                                    setOverheatDismissed(true)
+                                    setConfirm(
+                                        MOTIONS.find((m) =>
+                                            m.action === "liedown"
+                                        )!,
+                                    )
+                                }}
+                            >
+                                Lie down…
+                            </button>
+                        </footer>
+                    </div>
+                </div>
+            )}
 
             <div
                 className={"confirm" + (confirm ? " show amber" : "")}

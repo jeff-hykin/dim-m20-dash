@@ -21,9 +21,13 @@ html, body {
     inset: 0;
     background: var(--bg);
 }
+/* the video's own box: right of the panels, left of the d-pad column, above the command dock (nothing covers it) */
 .main-view {
     position: absolute;
-    inset: 0;
+    top: calc(var(--topbar-h, 58px) + var(--dim-inset-top));
+    left: calc(308px + var(--dim-inset-left));
+    right: calc(184px + var(--dim-inset-right));
+    bottom: calc(var(--dock-h, 56px) + 20px + var(--dim-inset-bottom));
     display: flex;
     align-items: center;
     justify-content: center;
@@ -114,7 +118,8 @@ html, body {
         color-mix(in srgb, var(--bg) 35%, transparent)
     );
 }
-.main-view:not(.live) + .vignette, .main-view.map + .vignette {
+/* the video has its own box now: no vignette needed over it */
+.vignette {
     display: none;
 }
 
@@ -469,7 +474,7 @@ html, body {
 .dock {
     position: absolute;
     left: calc(308px + var(--dim-inset-left));
-    right: calc(196px + var(--dim-inset-right));
+    right: calc(184px + var(--dim-inset-right));
     bottom: calc(16px + var(--dim-inset-bottom));
     z-index: 9;
     display: flex;
@@ -962,6 +967,10 @@ body.science.dark .dim-progress {
     background: color-mix(in oklch, var(--warn) 18%, var(--card));
     color: var(--fg);
 }
+/* "Simulated" is the bar's pill (its title says more): only a backend error gets a banner, so nothing sits on the video */
+.banner.warn {
+    display: none;
+}
 .banner.danger {
     border-color: color-mix(in srgb, var(--danger) 60%, transparent);
     background: color-mix(in oklch, var(--danger) 18%, var(--card));
@@ -1185,14 +1194,43 @@ body.science .dim-btn.rec-btn.on {
 }
 
 /* over the main view, top right under the bar: front / rear (or the 3D tools) and the camera / 3D swap */
+/* desktop: at the top of the right-hand column, beside the video */
 .main-tools {
     position: absolute;
-    top: calc(var(--topbar-h, 58px) + 8px);
+    top: calc(var(--topbar-h, 58px) + 4px);
     right: calc(16px + var(--dim-inset-right));
+    width: 156px;
     z-index: 9;
     display: flex;
+    flex-direction: column;
     gap: 8px;
+    align-items: stretch;
+}
+.main-tools .seg {
+    display: flex;
+}
+.main-tools .seg .dim-btn {
+    flex: 1;
+}
+.main-tools .view-swap {
+    justify-content: center;
+}
+.map-tools {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+.vel-mini {
+    display: flex;
+    flex-direction: column;
     align-items: center;
+    font-size: 10px;
+    line-height: 1.35;
+    color: var(--fg);
+    opacity: 0.75;
+}
+.vel-mini.on {
+    color: var(--primary);
+    opacity: 1;
 }
 .map-tools {
     display: flex;
@@ -1328,9 +1366,15 @@ html[data-dim-square] body.science .dr-thumbstick-base, html[data-dim-square] bo
     touch-action: manipulation;
 }
 
+.show-phone {
+    display: none;
+}
 @media (max-width: 820px) {
     .hide-phone {
         display: none !important;
+    }
+    .show-phone {
+        display: inline;
     }
     .dpad {
         display: none;
@@ -1345,15 +1389,35 @@ html[data-dim-square] body.science .dr-thumbstick-base, html[data-dim-square] bo
         z-index: 9;
         padding: 0 6px 6px;
     }
+    /* the video's box: under the commands and the camera row, above the thumb sticks */
+    .main-view {
+        left: 0;
+        right: 0;
+        top: calc(var(--topbar-h, 52px) + var(--dock-h, 56px) + 52px);
+        bottom: calc(min(38dvh, 260px) + env(safe-area-inset-bottom) + var(--dim-inset-bottom));
+    }
+    /* the readout lives between the sticks (.vel-mini) */
     .vel {
-        bottom: calc(min(38dvh, 260px) + 8px + var(--dim-inset-bottom));
+        display: none;
     }
     .toast-stack {
         bottom: calc(min(38dvh, 260px) + 60px + var(--dim-inset-bottom));
     }
+    /* the camera row: just above the video's top edge, clear of the command dock */
     .main-tools {
-        top: calc(var(--topbar-h, 52px) + 52px);
+        top: calc(var(--topbar-h, 52px) + var(--dock-h, 56px) + 16px);
         right: 10px;
+        left: 10px;
+        width: auto;
+        flex-direction: row;
+        justify-content: flex-end;
+        align-items: center;
+    }
+    .main-tools .seg {
+        display: inline-flex;
+    }
+    .main-tools .seg .dim-btn {
+        flex: none;
     }
     .main-tools .map-tools .m {
         display: none;
@@ -1366,10 +1430,10 @@ html[data-dim-square] body.science .dr-thumbstick-base, html[data-dim-square] bo
         display: none;
     }
     .banner {
-        top: calc(var(--topbar-h, 52px) + 96px);
+        top: calc(var(--topbar-h, 52px) + var(--dock-h, 56px) + 54px);
         font-size: 11px;
     }
-    .brand .name {
+    .brand {
         display: none;
     }
 }
@@ -1377,7 +1441,110 @@ html[data-dim-square] body.science .dr-thumbstick-base, html[data-dim-square] bo
     .sticks {
         height: 62dvh;
     }
+    /* landscape phone: no room for a box of its own; the sticks sit over the video's sides */
+    .main-view {
+        bottom: 0;
+    }
     .vel {
         display: none;
     }
+}
+
+/* a camera: the gateway's video track in the <video>, or frames drawn on the canvas (camera.ts shows one) */
+.cam-box {
+    width: 100%;
+    height: 100%;
+}
+.cam-box video, .cam-box canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    object-fit: contain;
+    background: #000;
+}
+
+.view-card.collapsed .cam-box {
+    display: none !important;
+}
+
+/* the robot card */
+.kv .v.ok {
+    color: var(--ok);
+}
+.kv .v.warn {
+    color: var(--warn);
+}
+.kv .v.danger {
+    color: var(--danger);
+}
+.motors {
+    display: grid;
+    grid-template-columns: 26px repeat(4, 1fr);
+    gap: 2px;
+    margin-top: 9px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    text-align: center;
+}
+.motors .head {
+    color: var(--muted-fg);
+    font-size: 9.5px;
+}
+.motors .cell {
+    padding: 2px 0;
+    border: 1px solid var(--border);
+    background: color-mix(in oklch, var(--ok) 10%, var(--card));
+}
+.motors .cell.warn {
+    background: color-mix(in oklch, var(--warn) 30%, var(--card));
+    border-color: var(--warn);
+}
+.motors .cell.danger {
+    background: color-mix(in oklch, var(--danger) 40%, var(--card));
+    border-color: var(--danger);
+    animation: pulse 1s ease-in-out infinite;
+}
+.errors {
+    margin-top: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 11px;
+    color: var(--warn);
+}
+.mode-badge {
+    font-family: var(--mono);
+}
+
+/* the overheat warning (Go2 Ctrl's): over everything until acknowledged */
+.overheat-back {
+    position: fixed;
+    inset: 0;
+    z-index: 28;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+}
+.overheat {
+    width: min(440px, 90vw);
+    padding: 18px 20px;
+    border: 2px solid var(--danger);
+    box-shadow: 0 0 40px 4px color-mix(in srgb, var(--danger) 45%, transparent);
+}
+.overheat header {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    font-weight: 600;
+    color: var(--danger);
+}
+.overheat p {
+    font-size: 13px;
+    line-height: 1.5;
+}
+.overheat footer {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
 }
