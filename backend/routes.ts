@@ -20,7 +20,7 @@ import { type Mode, settings, updateSettings } from "./settings.ts"
 
 export const INFO: Info = {
     title: "M20 Ctrl",
-    version: "1.0.0",
+    version: "1.1.0",
     description:
         "M20 Ctrl: monitor a Deep Robotics Lynx M20 quadruped's computers (GOS, AOS, NOS) — CPU, temperature, memory, " +
         "network, lidar and dimos — record them, and in blueprint mode watch, record and command the running dimos blueprint",
