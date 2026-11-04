@@ -127,6 +127,28 @@ provides:
                   dryRun:
                     type: boolean
                     description: 'say what it would do, without doing it'
+    /api/gait:
+      post:
+        description: >-
+          MOVES THE ROBOT (its stance changes). Sends the gait (2/23) to the robot's basic_server and waits for its
+          report to confirm it (5 s, one retry). gait: 0x1001 basic (direct mode's default), 0x1002 high obstacles,
+          0x1003 stairs (standard), 0x3002 flat (agile), 0x3003 stairs (agile; the blueprint's), 0x3004 off-road (agile,
+          undocumented). Either mode. Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)
+        x-when: the M20 should change its gait (how it walks)
+        requestBody:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gait:
+                    type: number
+                    description: 'the gait code, e.g. 4097 (0x1001) for basic'
+                  dryRun:
+                    type: boolean
+                    description: 'say what it would do, without doing it'
+                required:
+                  - gait
     /api/direct/move:
       post:
         description: >-

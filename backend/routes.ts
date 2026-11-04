@@ -194,6 +194,29 @@ export const routes: Route[] = [
     },
     {
         method: "POST",
+        path: "api/gait",
+        when: "the M20 should change its gait (how it walks)",
+        description:
+            "MOVES THE ROBOT (its stance changes). Sends the gait (2/23) to the robot's basic_server and waits for its " +
+            "report to confirm it (5 s, one retry). gait: 0x1001 basic (direct mode's default), 0x1002 high " +
+            "obstacles, 0x1003 stairs (standard), 0x3002 flat (agile), 0x3003 stairs (agile; the blueprint's), 0x3004 " +
+            "off-road (agile, undocumented). Either mode. Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)",
+        params: {
+            gait: { type: "number", description: "the gait code, e.g. 4097 (0x1001) for basic", required: true },
+            dryRun: { type: "boolean", description: "say what it would do, without doing it" },
+        },
+        handler: async ({ gait, dryRun }) => {
+            const dry = bool(dryRun, "dryRun")
+            const code = typeof gait === "string" ? Number(gait) : Number(gait)
+            const result = await direct.setGait(code, dry)
+            if (!dry) {
+                record("/robot_action", { action: "gait", gait: code, ...result })
+            }
+            return result
+        },
+    },
+    {
+        method: "POST",
         path: "api/direct/move",
         when: "the M20 should move in direct mode (hold it by calling again within durationMs)",
         description:

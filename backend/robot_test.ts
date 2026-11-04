@@ -1,7 +1,7 @@
 // robot.ts: the only frame it can send is the heartbeat; reports (shaped like a real M20's) fold into the state; and
 // against a stand-in basic_server on loopback, everything it sends is a heartbeat.
 import { assert, assertEquals } from "@std/assert"
-import { applyReport, heartbeatFrame, parseReport, Robot, type RobotState } from "./robot.ts"
+import { applyReport, commandFrame, heartbeatFrame, parseReport, Robot, type RobotState } from "./robot.ts"
 
 const frame = (type: number, command: number, items: unknown) => {
     const payload = new TextEncoder().encode(
@@ -102,4 +102,21 @@ Deno.test("against a stand-in basic_server: it only ever sends heartbeats, and r
     assert(received.length >= 2)
     assert(received.every((r) => r.type === 100 && r.command === 100), JSON.stringify(received))
     assertEquals(robot.state.basic?.hardEstop, true)
+})
+
+Deno.test('axis commands carry every float as a decimal (basic_server ignores "X":0)', () => {
+    const frame = commandFrame(2, 21, { X: 0, Y: -1, Z: 0, Roll: 0, Pitch: 0, Yaw: -0.396 }, 1)
+    const text = new TextDecoder().decode(frame.subarray(16))
+    assert(text.includes('"X":0.0,"Y":-1.0,"Z":0.0,"Roll":0.0,"Pitch":0.0,"Yaw":-0.396}'), text)
+    assertEquals(
+        new DataView(frame.buffer).getUint16(4, true),
+        frame.length - 16,
+        "the header's length is the payload's",
+    )
+    // integer fields stay integers
+    assert(
+        new TextDecoder().decode(commandFrame(2, 23, { GaitParam: 4097 }, 2).subarray(16)).includes(
+            '"GaitParam":4097}',
+        ),
+    )
 })

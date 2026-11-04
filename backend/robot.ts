@@ -307,6 +307,9 @@ const empty = (host: string, source: "udp" | "fake"): RobotState => ({
     errors: [],
 })
 
+/** the vendor guide's float fields (the axis command's), when JSON.stringify wrote them as integers */
+const FLOAT_FIELD_INTEGER = /("(?:X|Y|Z|Roll|Pitch|Yaw)":)(-?\d+)(?=[,}])/g
+
 /** A command frame (Type/Command/Items), the shape basic_server takes on UDP 30000 and TCP 30001. */
 export function commandFrame(
     type: number,
@@ -315,16 +318,17 @@ export function commandFrame(
     messageId: number,
 ): Uint8Array {
     const frame = heartbeatFrame(messageId)
-    const payload = new TextEncoder().encode(
-        JSON.stringify({
-            PatrolDevice: {
-                Type: type,
-                Command: command,
-                Time: JSON.parse(new TextDecoder().decode(frame.subarray(HEADER_SIZE))).PatrolDevice.Time,
-                Items: items,
-            },
-        }),
-    )
+    const json = JSON.stringify({
+        PatrolDevice: {
+            Type: type,
+            Command: command,
+            Time: JSON.parse(new TextDecoder().decode(frame.subarray(HEADER_SIZE))).PatrolDevice.Time,
+            Items: items,
+        },
+    })
+    // basic_server ignores an axis command whose numbers are JSON integers ("X":0 rather than 0.0; seen live: a
+    // turn-only frame, all integers but Yaw, didn't turn): the float fields always go out with a decimal point
+    const payload = new TextEncoder().encode(json.replace(FLOAT_FIELD_INTEGER, "$1$2.0"))
     const out = new Uint8Array(HEADER_SIZE + payload.length)
     out.set(frame.subarray(0, HEADER_SIZE))
     new DataView(out.buffer).setUint16(4, payload.length, true)

@@ -13,7 +13,7 @@
 // the simulated robot (robot.ts simulate()).
 import { logLine } from "./applog.ts"
 import { HttpError } from "./http.ts"
-import type { Robot } from "./robot.ts"
+import { GAIT, type Robot } from "./robot.ts"
 
 export type Mode = "blueprint" | "direct"
 export type Readiness = {
@@ -33,6 +33,11 @@ const USAGE_REGULAR = 0
 const USAGE_NAVIGATION = 1
 /** charging states the robot refuses to stand from (entering, charging, leaving, on the dock) */
 const CHARGE_BUSY = new Set([1, 2, 3, 5])
+
+/** the gait each mode's Enable driving ends in: Basic for direct, agile stairs for the blueprint (what `m20 stand` and
+ * dimos use) */
+export const GAIT_BASIC = 0x1001
+export const GAIT_AGILE_STAIRS = 0x3003
 
 const AXIS_HZ = 20
 export const MOVE_HOLD_MAX_MS = 500
@@ -175,9 +180,49 @@ export class Direct {
         }
     }
 
-    /** Stand and take RL control in REGULAR usage mode: what direct driving needs (MOVES THE ROBOT). */
+    /** 2/23, then the gait report confirming it (5 s, one more try: the robot drops a gait command that arrives with
+     * its own reset to Basic), as the CLI's set_gait does. */
+    async #setGait(gait: number) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+            await this.robot.command(2, 23, { GaitParam: gait })
+            if (await this.#wait(() => this.robot.state.basic?.gait === gait, 5000)) {
+                return
+            }
+        }
+        throw new Error(`the robot did not confirm the ${GAIT[gait]} gait`)
+    }
+
+    /** Changes the gait (2/23), confirmed by the robot's report (MOVES THE ROBOT: its stance changes). */
+    setGait(gait: number, dryRun = false) {
+        if (!GAIT[gait]) {
+            throw new HttpError(
+                400,
+                `gait must be one of ${
+                    Object.entries(GAIT).map(([v, n]) => `0x${Number(v).toString(16)} (${n})`).join(", ")
+                }`,
+            )
+        }
+        const plan = [
+            `gait → ${GAIT[gait]} (2/23 GaitParam 0x${gait.toString(16)})`,
+            "wait for the gait report (5 s, one retry)",
+        ]
+        return this.#run("gait", dryRun, plan, async () => {
+            if (this.robot.state.link !== "up") {
+                throw new Error("no status from the robot's basic_server")
+            }
+            await this.#setGait(gait)
+            return `gait: ${GAIT[gait]}`
+        })
+    }
+
+    /** Stand and take RL control in REGULAR usage mode, basic gait: what direct driving needs (MOVES THE ROBOT). */
     standForDirect(dryRun = false) {
-        const plan = ["usage mode → regular (1101/5 Mode 0)", "stand (2/22 1) unless standing", "RL control (2/22 17)"]
+        const plan = [
+            "usage mode → regular (1101/5 Mode 0)",
+            "stand (2/22 1) unless standing",
+            "RL control (2/22 17)",
+            "gait → basic (2/23 0x1001)",
+        ]
         return this.#run("enable direct driving", dryRun, plan, async () => {
             const b = this.robot.state.basic
             if (b && CHARGE_BUSY.has(b.charge)) {
@@ -200,7 +245,8 @@ export class Direct {
                     throw new Error("the robot did not confirm RL control within 5 s")
                 }
             }
-            return "standing in RL control, regular mode: direct driving works"
+            await this.#setGait(GAIT_BASIC)
+            return "standing in RL control, regular mode, basic gait: direct driving works"
         })
     }
 
@@ -236,7 +282,7 @@ export class Direct {
                 await this.#wait(() => this.robot.state.basic?.motion === MOTION_STAND, 5000)
                 await this.robot.command(2, 22, { MotionParam: MOTION_RL })
                 await this.#wait(() => this.robot.state.basic?.motion === MOTION_RL, 5000)
-                await this.robot.command(2, 23, { GaitParam: 0x3003 })
+                await this.#setGait(GAIT_AGILE_STAIRS)
                 return "standing in RL control, navigation mode, agile stairs gait (simulated)"
             })
         }
