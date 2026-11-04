@@ -20,6 +20,9 @@ export const cameraTopics = (camera: CameraName) => ({
     video: `dimos/${camera}_camera/foxglove_msgs.CompressedVideo`,
 })
 
+/** the mini picture of the other camera: 320 px wide at most, 5 fps, the lowest bandwidth priority (dropped first) */
+const MINI_CAMERA = { maxResolution: [320, 180], maxHz: 5, qualityToHzTradeoff: 1, bandwidthPriority: 0.25 }
+
 /** the deadman fires after this much silence from the page (zenoh-gateway heartbeat × misses) */
 export const HEARTBEAT_HZ = 10
 export const DEADMAN_MS = 400
@@ -235,9 +238,11 @@ export class Live {
     }
 
     /** One camera's frames, JPEG or video, whichever it publishes. */
-    watchCamera(camera: CameraName, onFrame: (frame: CameraFrame) => void): () => void {
+    /** One camera's frames, JPEG or video, whichever it publishes. `mini`: the corner thumbnail of the other camera, a
+     * small slow track at the lowest bandwidth priority (the gateway drops it first), from the JPEG topic only. */
+    watchCamera(camera: CameraName, onFrame: (frame: CameraFrame) => void, mini = false): () => void {
         if (this.fake) {
-            return this.fake.camera(camera, onFrame)
+            return this.fake.camera(camera, onFrame, mini ? 200 : 100)
         }
         let stop: (() => void) | null = null
         const start = () => {
@@ -248,16 +253,21 @@ export class Live {
                 // encoding re-encodes to H.264, sized and paced to the link, and the browser plays it in a <video>
                 this.#zenoh!.subscribe(
                     topics.jpeg,
-                    { delivery: "latest", encoding: "dimos_lcm_compressed_image", bandwidthPriority: 2 },
+                    mini
+                        ? { delivery: "latest", encoding: "dimos_lcm_compressed_image", ...MINI_CAMERA }
+                        : { delivery: "latest", encoding: "dimos_lcm_compressed_image", bandwidthPriority: 2 },
                     (message) => {
-                        this.rates.camera.tick()
+                        if (!mini) {
+                            this.rates.camera.tick()
+                        }
                         const stream = (message as { mediaStream?: MediaStream }).mediaStream
                         if (stream) {
                             onFrame({ kind: "stream", stream })
                         }
                     },
                 ),
-                this.#sub(topics.video, (message) => {
+                // (the H.265 topic only for the main view: the mini picture never decodes a full stream)
+                ...(mini ? [] : [this.#sub(topics.video, (message) => {
                     this.rates.camera.tick()
                     onFrame({
                         kind: "video",
@@ -265,7 +275,7 @@ export class Live {
                         data: message.data,
                         stamp: message.timestamp ? stampOf({ stamp: message.timestamp }) : null,
                     })
-                }),
+                })]),
             ]
             stop = () => stops.forEach((s) => s())
         }
@@ -359,7 +369,7 @@ export class FakeWorld {
         return { xyz: out, count, at: Date.now() }
     }
 
-    camera(camera: CameraName, onFrame: (frame: CameraFrame) => void): () => void {
+    camera(camera: CameraName, onFrame: (frame: CameraFrame) => void, everyMs = 100): () => void {
         const canvas = new OffscreenCanvas(640, 360)
         const context = canvas.getContext("2d")!
         let busy = false
@@ -396,7 +406,7 @@ export class FakeWorld {
             this.#live.rates.camera.tick()
             onFrame({ kind: "jpeg", data: new Uint8Array(await blob.arrayBuffer()), stamp: Date.now() })
             busy = false
-        }, 100)
+        }, everyMs)
         return () => clearInterval(timer)
     }
 

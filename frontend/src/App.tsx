@@ -466,7 +466,7 @@ export function App() {
     )
     const [panelsOpen, setPanelsOpen] = useState(false)
     const [view, setView] = useState(() =>
-        loadStored("m20.view", { main: "camera" as "camera" | "map", camera: "front" as CameraName })
+        loadStored("m20.view", { main: "camera" as "camera" | "map", camera: "front" as CameraName, mini: true })
     )
     const [pipBig, setPipBig] = useState(false)
     const [follow, setFollow] = useState(true)
@@ -617,6 +617,24 @@ export function App() {
         }
     }, [camShown, view.main, view.camera, source])
     useEffect(() => store("m20.view", view), [view])
+    // ── the other camera, small, in the main camera's corner (low resolution and rate, dropped first) ──
+    const miniCanvas = useRef<HTMLCanvasElement>(null)
+    const miniVideo = useRef<HTMLVideoElement>(null)
+    const [miniLive, setMiniLive] = useState(false)
+    const otherCamera: CameraName = view.camera === "front" ? "rear" : "front"
+    const miniShown = view.main === "camera" && view.mini
+    useEffect(() => {
+        setMiniLive(false)
+        if (!miniShown || !miniCanvas.current || !miniVideo.current) {
+            return
+        }
+        const decoder = new CameraCanvas(miniCanvas.current, miniVideo.current, (stats) => setMiniLive(stats.fps > 0))
+        const stop = live.current.watchCamera(otherCamera, (frame) => decoder.push(frame), true)
+        return () => {
+            stop()
+            decoder.close()
+        }
+    }, [miniShown, otherCamera, source])
     const flipCamera = useCallback(
         () => setView((v) => ({ ...v, camera: v.camera === "front" ? "rear" : "front" })),
         [],
@@ -1111,6 +1129,34 @@ export function App() {
                     <video ref={mainVideo} className="cam-video" autoPlay muted playsInline disablePictureInPicture />
                     <canvas ref={mainCam} className="cam-canvas" />
                 </div>
+                {/* the other camera, small, top-left: tap to swap; × hides it (the bar's Mini brings it back) */}
+                {miniShown && (
+                    <div
+                        className={`cam-mini${miniLive ? " live" : ""}`}
+                        data-ui="camera.mini"
+                        title={`the ${otherCamera} camera: tap to make it the main one`}
+                        onClick={flipCamera}
+                    >
+                        <div className="cam-box">
+                            <video ref={miniVideo} autoPlay muted playsInline disablePictureInPicture />
+                            <canvas ref={miniCanvas} />
+                        </div>
+                        <span className="cam-mini-label">{otherCamera === "front" ? "Front" : "Rear"}</span>
+                        <button
+                            type="button"
+                            className="cam-mini-hide"
+                            data-ui="camera.mini.hide"
+                            aria-label="hide the small camera"
+                            title="hide the small camera"
+                            onClick={(e) => {
+                                e.stopPropagation()
+                                setView((v) => ({ ...v, mini: false }))
+                            }}
+                        >
+                            <Icon name="close" size={12} />
+                        </button>
+                    </div>
+                )}
                 <canvas
                     ref={mainMap}
                     className="map-canvas"
@@ -1544,6 +1590,20 @@ export function App() {
                 {view.main === "camera"
                     ? cameraSwitch
                     : <div className="dim-panel glass map-tools">{mapTools(false)}</div>}
+                {view.main === "camera" && (
+                    <button
+                        type="button"
+                        className={`dim-btn sm view-swap${view.mini ? " on" : ""}`}
+                        data-ui="camera.mini.toggle"
+                        aria-pressed={view.mini}
+                        title={view.mini
+                            ? "hide the small picture of the other camera"
+                            : "show the other camera, small, in the corner"}
+                        onClick={() => setView((v) => ({ ...v, mini: !v.mini }))}
+                    >
+                        Mini
+                    </button>
+                )}
                 <button
                     type="button"
                     className="dim-btn sm view-swap"
