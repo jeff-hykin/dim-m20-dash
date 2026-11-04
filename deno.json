@@ -45,6 +45,7 @@
         "@std/encoding": "jsr:@std/encoding@1",
         "@cliffy/command": "jsr:@cliffy/command@1.0.0-rc.7",
         "dax": "https://esm.sh/dax-sh@0.42.0",
-        "fflate": "https://esm.sh/fflate@0.8.2"
+        "fflate": "https://esm.sh/fflate@0.8.2",
+        "@std/tar": "jsr:@std/tar@0.1"
     }
 }

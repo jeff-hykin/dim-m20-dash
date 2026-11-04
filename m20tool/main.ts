@@ -4,7 +4,8 @@ import { $ } from "dax"
 import { DEFAULT_HOST, REPORT_BASIC } from "../backend/basic_server.ts"
 import { DOCK_LOG, GOS_CABLE_IP, GOS_IP, HELP, TAILSCALE_GOS, USER, VERSION } from "./dog.ts"
 import { type CommandName, COMMANDS, dock, Fail, Link } from "./robot.ts"
-import { docsStep, findDog, runStep, selfInstallStep, setup } from "./setup.ts"
+import { cleanupRunners, findDog, installSteps, prepare, runStep, setup } from "./setup.ts"
+import { boardStep } from "./board_step.ts"
 import { type Board, sshArgs, sshPortOpen } from "./remote.ts"
 import { compiled } from "./install.ts"
 
@@ -20,19 +21,21 @@ function self(): string[] {
         : [Deno.execPath(), "run", "-A", "--unstable-net", new URL(import.meta.url).pathname]
 }
 
-/** Starts `m20tool dock --watch` detached (setsid when there is one), logging to ~/m20_dock.log. */
-async function watchDockInBackground(host: string): Promise<string> {
+/** Starts `m20tool dock --watch` detached (its own session: Deno's `detached`), logging to ~/m20_dock.log. */
+function watchDockInBackground(host: string): Promise<string> {
     const log = `${HOME}/${DOCK_LOG}`
     const args = [...self(), "dock", "--watch", "--log", log, "--host", host]
-    const setsid = await $.which("setsid")
-    const child = new Deno.Command(setsid ?? args[0], {
-        args: setsid ? args : args.slice(1),
+    const child = new Deno.Command(args[0], {
+        args: args.slice(1),
+        detached: true,
         stdin: "null",
         stdout: "null",
         stderr: "null",
     }).spawn()
     child.unref()
-    return `docking: the robot took the command; watching it in the background (pid ${child.pid}), log ${log}`
+    return Promise.resolve(
+        `docking: the robot took the command; watching it in the background (pid ${child.pid}), log ${log}`,
+    )
 }
 
 /** On a laptop where basic_server doesn't answer: the same command on GOS over ssh. */
@@ -149,12 +152,15 @@ const cli = new Command()
             exitCode = 1
             return
         }
-        for (const board of [dog.gos, dog.aos]) {
-            for (const step of [selfInstallStep(board), docsStep(board)]) {
+        try {
+            await prepare(dog)
+            for (const step of installSteps(dog)) {
                 if (!(await runStep(step, !!options.dryRun))) {
                     exitCode = 1
                 }
             }
+        } finally {
+            await cleanupRunners()
         }
     })
 
@@ -178,7 +184,10 @@ for (const [name, info] of Object.entries(COMMANDS)) {
 }
 
 // the top-level --help is the dog's own help (addresses, logins, the hotspot); --version is plain for scripts
-if (Deno.args.length === 1 && ["--help", "-h"].includes(Deno.args[0])) {
+if (Deno.args[0] === "board-step") {
+    // what setup runs on a board (board_step.ts); not for people
+    Deno.exit(await boardStep(Deno.args.slice(1)))
+} else if (Deno.args.length === 1 && ["--help", "-h"].includes(Deno.args[0])) {
     console.log(HELP)
 } else if (Deno.args.length === 1 && ["--version", "-V"].includes(Deno.args[0])) {
     console.log(`m20tool ${VERSION}`)

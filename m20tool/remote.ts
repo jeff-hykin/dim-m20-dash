@@ -1,20 +1,27 @@
-// Running things on the boards from a laptop: one `ssh` per call (the only way in; Deno has no ssh of its own).
-// Scripts go as base64 inside the command line (no temp files, no stdin needed); big files go over stdin into /tmp
-// and the script that installs them removes them. Root: `sudo -S` fed the board password (AOS asks for it, GOS
-// doesn't). Before our key is on a board, ssh gets the password from a throwaway SSH_ASKPASS script.
+// Reaching the boards from a laptop: `ssh` (the only way in; Deno has no ssh of its own). Once m20tool is on a board
+// (installed, or a temporary copy uploaded to /tmp), every step runs inside it (`m20tool board-step ...`), its
+// parameters on ssh's stdin. Before that, only two plain commands go over ssh: the upload of that copy
+// (`umask 077; cat > /tmp/...; chmod 700 /tmp/...`) and `/usr/local/bin/m20tool --version`. Before our key is on a
+// board, ssh gets the board password from a throwaway SSH_ASKPASS script.
 import { $ } from "dax"
-import { encodeBase64 } from "@std/encoding/base64"
-import { BOARD_PASSWORD } from "./dog.ts"
+import { BOARD_BIN, BOARD_PASSWORD, VERSION } from "./dog.ts"
 import { redact } from "./scripts.ts"
+import { RESULT_PREFIX } from "./board_step.ts"
+import type { Params } from "./board.ts"
+import type { CheckResult } from "./steps.ts"
 
 export type Board = {
     name: "GOS" | "AOS" | "NOS"
     /** user@host (or an ~/.ssh/config alias) */
     target: string
-    /** reach it through this board (ssh -W) */
+    /** reach it through this board (ssh ProxyCommand) */
     via?: Board
     /** a robot's fixed internal/cable address: every M20 has the same ones, so its host key isn't pinned */
     sharedAddress: boolean
+    /** the m20tool to run steps with there (setup fills it in) */
+    runner?: string
+    /** our key isn't accepted yet: use the board password */
+    password?: boolean
 }
 
 export const describe = (board: Board): string =>
@@ -48,7 +55,7 @@ function hostKeyOptions(board: Board): string[] {
 const quote = (word: string) => /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", "'\\''")}'`
 
 /** ssh's arguments for `board` (everything before the remote command) */
-export function sshArgs(board: Board, password: boolean, timeoutSeconds = 8): string[] {
+export function sshArgs(board: Board, password = !!board.password, timeoutSeconds = 8): string[] {
     const args = [
         "-o",
         `ConnectTimeout=${timeoutSeconds}`,
@@ -61,72 +68,41 @@ export function sshArgs(board: Board, password: boolean, timeoutSeconds = 8): st
     ]
     if (board.via) {
         // ProxyCommand rather than -J: -J's own ssh ignores these -o options
-        args.push(
-            "-o",
-            `ProxyCommand=ssh ${sshArgs(board.via, password, timeoutSeconds).map(quote).join(" ")} -W %h:%p`,
-        )
+        args.push("-o", `ProxyCommand=ssh ${sshArgs(board.via, false, timeoutSeconds).map(quote).join(" ")} -W %h:%p`)
     }
     args.push(board.target)
     return args
 }
 
-/** env for an ssh that may use the board password */
-function passwordEnv(password: boolean): Record<string, string> {
-    return password
-        ? { SSH_ASKPASS: askpass(), SSH_ASKPASS_REQUIRE: "force", DISPLAY: Deno.env.get("DISPLAY") ?? ":0" }
-        : {}
-}
-
-/** A shell command line that runs `script` (as root with `root`), without temp files or stdin. With `secret`, the
- * secret arrives on stdin and goes into a 0600 temp file (never argv, so never in the process list); the script reads
- * it into $M20_SECRET and deletes the file first thing. */
-export function wrap(script: string, root: boolean, secret = false): string {
-    const body = secret ? `M20_SECRET=$(cat "$M20_SECRET_FILE"); rm -f "$M20_SECRET_FILE"\n${script}` : script
-    const b64 = encodeBase64(new TextEncoder().encode(body))
-    const decode = `"$(printf %s ${b64} | base64 -d)"`
-    const env = secret ? `env M20_SECRET_FILE="$f" ` : ""
-    // sudo -S reads the password (a single apostrophe, \047) from the pipe; on GOS (NOPASSWD) it's never read
-    const command = root ? `printf '\\047\\n' | sudo -S -p '' ${env}sh -c ${decode}` : `${env}sh -c ${decode}`
-    return secret
-        ? `umask 077; f=$(mktemp /tmp/m20tool-secret.XXXXXX); cat > "$f"; ${command}; rc=$?; rm -f "$f"; exit $rc`
-        : command
-}
+const passwordEnv = (password: boolean): Record<string, string> =>
+    password ? { SSH_ASKPASS: askpass(), SSH_ASKPASS_REQUIRE: "force", DISPLAY: Deno.env.get("DISPLAY") ?? ":0" } : {}
 
 export type RunResult = { code: number; stdout: string; stderr: string }
 
-/** Runs `script` on `board`: captured output; code 255 = ssh itself failed. */
+/** Runs `command` (plain words) on `board`: captured output; code 255 = ssh itself failed. */
 export async function run(
     board: Board,
-    script: string,
-    options: { root?: boolean; password?: boolean; stdinPath?: string; timeoutSeconds?: number; secret?: string } = {},
+    command: string,
+    options: { stdinPath?: string; stdinText?: string; timeoutSeconds?: number; password?: boolean } = {},
 ): Promise<RunResult> {
-    const secret = options.secret !== undefined
-    let command = $`ssh ${sshArgs(board, !!options.password)} ${wrap(script, !!options.root, secret)}`
-        .env(passwordEnv(!!options.password))
-        .noThrow()
-        .stdout("piped")
+    const password = options.password ?? !!board.password
+    let c = $`ssh ${sshArgs(board, password)} ${command}`.env(passwordEnv(password)).noThrow().stdout("piped")
         .stderr("piped")
-    command = secret
-        ? command.stdinText(options.secret!)
+    c = options.stdinText !== undefined
+        ? c.stdinText(options.stdinText)
         : options.stdinPath
-        ? command.stdin($.path(options.stdinPath))
-        : command.stdin("null")
+        ? c.stdin($.path(options.stdinPath))
+        : c.stdin("null")
     if (options.timeoutSeconds) {
-        command = command.timeout(options.timeoutSeconds * 1000)
+        c = c.timeout(options.timeoutSeconds * 1000)
     }
-    const result = await command
+    const result = await c
     return { code: result.code, stdout: redact(result.stdout.trim()), stderr: redact(result.stderr.trim()) }
-}
-
-/** Runs `script` on `board` with the terminal attached (for `tailscale up`'s login link); its exit code. */
-export async function runInteractive(board: Board, script: string, root = false): Promise<number> {
-    const result = await $`ssh -t ${sshArgs(board, false)} ${wrap(script, root)}`.noThrow()
-    return result.code
 }
 
 /** Can we get in with our key (no password)? */
 export async function keyWorks(board: Board): Promise<boolean> {
-    return (await run(board, "true", { timeoutSeconds: 20 })).code === 0
+    return (await run(board, "true", { timeoutSeconds: 20, password: false })).code === 0
 }
 
 /** Is TCP port 22 open there (2 s)? Names that don't resolve count as no. */
@@ -146,12 +122,87 @@ export async function sshPortOpen(host: string, timeoutMs = 2000): Promise<boole
     }
 }
 
-/** Uploads a local file to /tmp on the board (as the login user); its remote path. */
+const random = () => crypto.randomUUID().slice(0, 8)
+const temporaryRunners: Board[] = []
+
+/** The m20tool to run steps with on `board`: the installed one when it's this version, else a copy uploaded to /tmp
+ * (removed by cleanupRunners). `localBinary` gives the aarch64 Linux binary. */
+export async function ensureRunner(board: Board, localBinary: () => Promise<string>): Promise<string> {
+    if (board.runner) {
+        return board.runner
+    }
+    const installed = await run(board, `${BOARD_BIN} --version`, { timeoutSeconds: 30 })
+    if (installed.code === 255) {
+        throw new Error(`can't reach ${board.name} (${describe(board)}): ${installed.stderr}`)
+    }
+    if (installed.stdout === `m20tool ${VERSION}`) {
+        board.runner = BOARD_BIN
+        return BOARD_BIN
+    }
+    const path = `/tmp/m20tool-run-${random()}`
+    const result = await run(board, `umask 077; cat > ${path}; chmod 700 ${path}`, {
+        stdinPath: await localBinary(),
+        timeoutSeconds: 900,
+    })
+    if (result.code !== 0) {
+        throw new Error(`upload of m20tool to ${board.name} failed: ${result.stderr || result.stdout}`)
+    }
+    board.runner = path
+    temporaryRunners.push(board)
+    return path
+}
+
+export async function cleanupRunners() {
+    for (const board of temporaryRunners.splice(0)) {
+        await run(board, `${board.runner} board-step cleanup`, { timeoutSeconds: 60 }).catch(() => {})
+        board.runner = undefined
+    }
+}
+
+/** Runs a board step's check or apply on `board` (its m20tool); the parameters go over stdin. */
+export async function boardStep(
+    board: Board,
+    id: string,
+    mode: "check" | "apply",
+    params: Params,
+): Promise<CheckResult> {
+    const result = await run(board, `${board.runner} board-step ${id} ${mode}`, {
+        stdinText: JSON.stringify(params),
+        timeoutSeconds: mode === "apply" ? 900 : 120,
+    })
+    if (result.code === 255) {
+        throw new Error(`can't reach ${board.name} (${describe(board)}): ${result.stderr}`)
+    }
+    if (mode === "apply" && result.stderr) {
+        console.log(result.stderr.replace(/^/gm, "    "))
+    }
+    const line = result.stdout.split("\n").reverse().find((l) => l.startsWith(RESULT_PREFIX))
+    if (!line) {
+        throw new Error(
+            `${board.name}: ${id} ${mode} gave no result (exit ${result.code}): ${result.stderr || result.stdout}`,
+        )
+    }
+    const parsed = JSON.parse(line.slice(RESULT_PREFIX.length))
+    if (parsed.error) {
+        throw new Error(`${board.name}: ${parsed.error}`)
+    }
+    return parsed as CheckResult
+}
+
+/** Uploads a local file to /tmp on the board through its m20tool; the remote path. */
 export async function upload(board: Board, localPath: string, name: string): Promise<string> {
-    const remote = `/tmp/m20tool-upload-${name}`
-    const result = await run(board, `umask 077; cat > ${remote}`, { stdinPath: localPath, timeoutSeconds: 900 })
+    const remote = `/tmp/m20tool-upload-${name}-${random()}`
+    const result = await run(board, `${board.runner} board-step receive ${remote}`, {
+        stdinPath: localPath,
+        timeoutSeconds: 900,
+    })
     if (result.code !== 0) {
         throw new Error(`upload to ${describe(board)} failed: ${result.stderr || result.stdout}`)
     }
     return remote
+}
+
+/** `tailscale up` on the board with the terminal attached (its login link); its exit code. */
+export async function tailscaleUp(board: Board): Promise<number> {
+    return (await $`ssh -t ${sshArgs(board)} ${board.runner!} board-step tailscale-up ${board.name}`.noThrow()).code
 }

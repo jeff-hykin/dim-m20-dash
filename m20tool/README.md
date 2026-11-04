@@ -88,22 +88,32 @@ are backed up as `<file>.bak-m20tool-<time>` first.
 
 ## System commands it runs
 
-On the laptop (setup / install-on-dog only; the robot commands run none, except `ssh` for the GOS fallback and `setsid`
-for dock's background watcher):
+Everything that Deno can do itself (files, backups, edits, the managed doc blocks, unpacking the Tailscale tarball,
+finding processes in `/proc`, signals, internet checks with `fetch`, downloads) is done in Deno. What's left:
 
-- `ssh` (every board command; the board password comes from a throwaway `SSH_ASKPASS` script), `ssh-keygen` (only when
-  there's no key), `sudo`
+On the laptop (setup / install-on-dog):
+
+- `ssh` (every board call; before our key is on a board, the board password comes from a throwaway `SSH_ASKPASS`
+  script), `ssh-keygen` (only when there's no key), `sudo`
 - macOS: `networksetup -listallhardwareports`, `ifconfig` (find the cable; add 192.168.3.1 as an alias),
   `route -n get default`, `sysctl -w net.inet.ip.forwarding=1`, `pfctl -a com.apple/m20 -f -`, `pfctl -E`
 - Linux: `ip addr add`, `ip link set`, `sysctl -w net.ipv4.ip_forward=1`, `iptables` (else `nft`)
-- downloads (Deno `fetch`, no curl): Deno 2.9.8 aarch64, the Tailscale arm64 tarball, m20tool's aarch64 release
 
-On the boards (through ssh; root through `sudo -S`): `sh`, `base64`, `cmp`, `cp`, `mv`, `chmod`, `chown`, `mkdir`, `rm`,
-`install`, `mktemp`, `tar`, `cat`, `grep`, `sed`, `awk`, `date`, `tr`, `printf`, `systemctl`, `udevadm`, `rmmod`, `ip`,
-`iptables`, `resolvectl`, `nmcli`, `iw`, `ping`, `curl`, `pgrep`, `pkill`, `ssh-keygen`, `tailscale`,
-`/usr/local/bin/office-nat`, `/usr/local/bin/m20tool --version`; and what the installed services run themselves
-(`usb-ethernet-up`: `ip`, `dhclient`, `iptables`, `sysctl`, `resolvectl`; `real-time-offset`: `phc_ctl`, `curl`, `ssh`,
-`systemctl restart phc2sys`; network-safety: `nmcli`, `iw`, `tailscale`, the vendor's `ap_start.sh`).
+The robot commands spawn nothing, except `ssh` (running the command on GOS when basic_server doesn't answer from a
+laptop) and a detached copy of m20tool itself (dock's background watcher).
+
+Over ssh, before m20tool runs on a board: `/usr/local/bin/m20tool --version`, and when that isn't this version, the
+upload of a temporary copy (`umask 077; cat > /tmp/m20tool-run-<id>; chmod 700 /tmp/m20tool-run-<id>`), which runs every
+step and deletes itself at the end (`board-step cleanup`). NOS gets only the key, in plain shell (`mkdir`, `grep`).
+
+On GOS and AOS, inside m20tool (`board-step`): `sudo` (root steps re-run themselves under `sudo -S`), `systemctl`,
+`udevadm`, `rmmod`, `ip`, `resolvectl`, `iptables -C` (check only), `nmcli`, `iw list`, `ping -I wlan0`, `ssh-keygen`
+(AOS's root key, once), `tailscale`, the dog's own `/usr/local/bin/office-nat`, and `/usr/local/bin/m20tool --version`.
+
+The services setup installs run their own commands (unchanged from the hand-built dog): `usb-ethernet-up` (`ip`,
+`dhclient`, `iptables`, `sysctl`, `resolvectl`), `real-time-offset` (`phc_ctl`, `curl`, `ssh`,
+`systemctl restart
+phc2sys`), network-safety (`nmcli`, `iw`, `tailscale`, the vendor's `ap_start.sh`).
 
 ## Develop
 
