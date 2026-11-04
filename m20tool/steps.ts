@@ -20,6 +20,12 @@ import { BOARD_BIN, GOS_IP, OLD_CLI, VERSION } from "./dog.ts"
 import { MASK } from "./scripts.ts"
 
 export type BoardName = "GOS" | "AOS"
+
+/** the pinned Deno our board services run on (their units' ExecStart), installed by the deno step */
+export const DENO = "/usr/local/bin/deno"
+const DENO_RUN = [DENO, "run", "--no-remote", "--cached-only", "--no-lock", "--no-config", "--no-prompt", "-A"]
+/** network-safety, compiled (no Deno needed, so no Deno change can break it) */
+export const NETWORK_SAFETY_BIN = "/usr/local/libexec/m20-network-safety"
 export type CheckResult = { todos: string[]; data?: unknown }
 export type BoardStep = {
     id: string
@@ -50,6 +56,12 @@ const sys = (...argv: string[]): Action => ({ kind: "exec", argv })
 const sysMaybe = (...argv: string[]): Action => ({ kind: "exec", argv, okCodes: [0, 1, 2, 3, 4, 5, 6, 7, 8] })
 const filesDiffer = (files: FileSpec[]) =>
     files.filter((f) => !sameFile(f.path, f.content)).map((f) => `${f.path} missing or different`)
+const stillThere = (...paths: string[]) => paths.filter(exists).map((path) => `old ${path} still there`)
+const removeAll = (...paths: string[]): Action => ({
+    kind: "do",
+    text: `remove the old ${paths.join(", ")} (if there)`,
+    run: () => paths.filter(exists).forEach((path) => Deno.removeSync(path)),
+})
 const notEnabled = async (...units: string[]) =>
     (await Promise.all(units.map(async (u) => ((await enabled(u)) ? "" : `${u} not enabled`)))).filter(Boolean)
 const clockTodo = () =>
@@ -167,9 +179,28 @@ const aosUplink: BoardStep = {
 
 // ---------------------------------------------------------------------------------------------------- both
 
+function deno(board: BoardName): BoardStep {
+    return {
+        id: `${board.toLowerCase()}/deno`,
+        board,
+        title: `${board}: Deno at ${DENO} (what our board services run on; one that's already there is kept)`,
+        root: true,
+        check: async () => ({ todos: (await exec([DENO, "--version"])).code === 0 ? [] : [`no working ${DENO}`] }),
+        actions: (p) => [{
+            kind: "do",
+            text: `install the uploaded deno 2.9.8 aarch64 as ${DENO} (755); remove the upload`,
+            run: () => {
+                if (p.upload) {
+                    put(DENO, Deno.readFileSync(p.upload), 0o755)
+                    Deno.removeSync(p.upload)
+                }
+            },
+        }],
+    }
+}
+
 const TIME_FILES = (aos: boolean) => [
     file("/usr/local/bin/real-time-offset", "both/real-time-offset", 0o755),
-    file("/usr/local/bin/phc2sys-real-time", "both/phc2sys-real-time", 0o755),
     file("/etc/systemd/system/real-time-offset.service", "both/real-time-offset.service", 0o644),
     file("/etc/systemd/system/real-time-offset.timer", "both/real-time-offset.timer", 0o644),
     file("/etc/systemd/system/phc2sys.service.d/real-time.conf", "both/phc2sys-real-time.conf", 0o644),
@@ -188,6 +219,7 @@ function time(board: BoardName): BoardStep {
         check: async () => ({
             todos: [
                 ...filesDiffer(TIME_FILES(aos)),
+                ...stillThere("/usr/local/bin/phc2sys-real-time"),
                 ...(await notEnabled("real-time-offset.timer")),
                 ...(aos && !exists("/root/.ssh/id_ed25519.pub") ? ["AOS has no root ssh key"] : []),
                 ...(aos ? [] : clockTodo()),
@@ -195,7 +227,20 @@ function time(board: BoardName): BoardStep {
             data: aos ? readText("/root/.ssh/id_ed25519.pub")?.trim() : undefined,
         }),
         actions: () => [
+            {
+                kind: "do",
+                text:
+                    "first, /run/phc2sys-offset.env = PHC2SYS_OFFSET=<the offset phc2sys runs with now, /run/phc2sys-offset> so a phc2sys restart under the new drop-in keeps it",
+                run: () => {
+                    const current = (readText("/run/phc2sys-offset") ?? "0").trim()
+                    Deno.writeTextFileSync(
+                        "/run/phc2sys-offset.env",
+                        `PHC2SYS_OFFSET=${/^-?\d+$/.test(current) ? current : "0"}\n`,
+                    )
+                },
+            },
             ...putAll(TIME_FILES(aos)),
+            removeAll("/usr/local/bin/phc2sys-real-time"),
             ...(aos
                 ? [{
                     kind: "do" as const,
@@ -457,20 +502,37 @@ const vendor: BoardStep = {
 
 const SAFETY_FILES = () => [
     file("/home/user/readme/network_safety.md", "aos/network_safety.md", 0o644, "user"),
-    file("/home/user/readme/network_safety/main.js", "aos/network_safety_main.js", 0o755, "user"),
     file("/etc/systemd/system/network-safety.service", "aos/network-safety.service", 0o644),
 ]
+const OLD_SAFETY = [
+    "/home/user/readme/network_safety/main.js",
+    "/home/user/readme/network_safety/network-safety.service",
+]
 
+async function sha256(path: string): Promise<string> {
+    try {
+        const digest = await crypto.subtle.digest("SHA-256", Deno.readFileSync(path))
+        return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")
+    } catch {
+        return ""
+    }
+}
+
+/** Never restarted here: a restart brings the hotspot up (ExecStopPost). A running old one switches to the new unit at
+ * its next restart (crash, watchdog, boot); started only when it isn't running. */
 const networkSafety: BoardStep = {
     id: "aos/network-safety",
     board: "AOS",
     title:
-        "AOS: network-safety (hotspot or Wi-Fi on wlan0, always falling back to the hotspot; ~/readme/network_safety.md)",
+        `AOS: network-safety, compiled at ${NETWORK_SAFETY_BIN} (hotspot or Wi-Fi on wlan0, always falling back to the hotspot; ~/readme/network_safety.md)`,
     root: true,
-    check: async () => ({
+    check: async (p) => ({
         todos: [
             ...filesDiffer(SAFETY_FILES()),
-            ...(exists("/usr/local/bin/deno") ? [] : ["no /usr/local/bin/deno"]),
+            ...((await sha256(NETWORK_SAFETY_BIN)) === p.networkSafetySha256
+                ? []
+                : [`${NETWORK_SAFETY_BIN} missing or not this build`]),
+            ...stillThere(...OLD_SAFETY),
             ...(await notEnabled("network-safety.service")),
             ...((await active("network-safety.service")) ? [] : ["network-safety.service not running"]),
         ],
@@ -479,27 +541,40 @@ const networkSafety: BoardStep = {
         {
             kind: "do",
             text:
-                "(only when missing) install the uploaded deno 2.9.8 aarch64 as /usr/local/bin/deno (755); remove the upload",
+                `(only when it differs) install the uploaded compiled network-safety as ${NETWORK_SAFETY_BIN} (755); remove the upload`,
             run: () => {
                 if (p.upload) {
-                    put("/usr/local/bin/deno", Deno.readFileSync(p.upload), 0o755)
+                    Deno.mkdirSync("/usr/local/libexec", { recursive: true })
+                    put(NETWORK_SAFETY_BIN, Deno.readFileSync(p.upload), 0o755)
                     Deno.removeSync(p.upload)
                 }
             },
         },
         ...putAll(SAFETY_FILES()),
+        removeAll(...OLD_SAFETY),
         {
             kind: "do",
             text: "chown user:user /home/user/readme /home/user/readme/network_safety",
             run: () => {
                 const info = Deno.statSync("/home/user")
                 for (const dir of ["/home/user/readme", "/home/user/readme/network_safety"]) {
+                    Deno.mkdirSync(dir, { recursive: true })
                     Deno.chownSync(dir, info.uid!, info.gid!)
                 }
             },
         },
         sys("systemctl", "daemon-reload"),
-        sys("systemctl", "enable", "--now", "network-safety.service"),
+        sys("systemctl", "enable", "network-safety.service"),
+        {
+            kind: "do",
+            text:
+                "systemctl start network-safety.service only if it isn't running (never a restart: that brings the hotspot up; a running one picks up the new unit at its next restart)",
+            run: async () => {
+                if (!(await active("network-safety.service"))) {
+                    await exec(["systemctl", "start", "network-safety.service"])
+                }
+            },
+        },
     ],
 }
 
@@ -540,7 +615,7 @@ const firewall: BoardStep = {
         ...putAll(FIREWALL_FILES()),
         sys("systemctl", "daemon-reload"),
         sys("systemctl", "enable", "office-nat.service"),
-        sys("/usr/local/bin/office-nat"),
+        sys(...DENO_RUN, "/usr/local/bin/office-nat"),
     ],
 }
 
@@ -733,6 +808,8 @@ const query = (id: string, board: BoardName, root: boolean, run: (p: Params) => 
 })
 
 export const STEPS: BoardStep[] = [
+    deno("GOS"),
+    deno("AOS"),
     authorizedKey("gos/ssh-key", "GOS", "this computer's key on GOS", (p) => p.pubkey),
     authorizedKey("aos/ssh-key", "AOS", "this computer's key on AOS", (p) => p.pubkey),
     authorizedKey("gos/trust-aos", "GOS", "GOS trusts AOS's root key (AOS's clock asks GOS)", (p) => p.aosRootKey),

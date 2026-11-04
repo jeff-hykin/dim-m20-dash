@@ -6,12 +6,14 @@ Wants=NetworkManager.service
 StartLimitIntervalSec=0
 
 [Service]
-Environment=DENO_DIR=/var/cache/network-safety-deno DENO_NO_UPDATE_CHECK=1 NO_COLOR=1
-ExecStart=/home/user/readme/network_safety/main.js run
-# a hung loop (not just a dead one) is killed: main.js pings the watchdog every pass; the longest pass is a Wi-Fi search
+# the tool compiled (deno compile, no code cache), so no Deno install or update can break it; its config and saved
+# mode stay in ~/readme/network_safety/config.json
+Environment=NETWORK_SAFETY_DIR=/home/user/readme/network_safety NO_COLOR=1
+ExecStart=/usr/local/libexec/m20-network-safety run
+# a hung loop (not just a dead one) is killed: the tool pings the watchdog every pass; the longest pass is a Wi-Fi search
 WatchdogSec=900
 NotifyAccess=all
-# however the tool ends (crash, hang, kill, missing deno, stop), the radio lands on the factory hotspot;
+# however the tool ends (crash, hang, kill, stop), the radio lands on the factory hotspot;
 # skipped when the hotspot is already up, so a restart loop can't keep recreating it
 ExecStopPost=/bin/sh -c 'nmcli -g GENERAL.CONNECTION device show wlan0 | grep -qx myap50G || /opt/robot/scripts/board_resources/wifi/ap_start.sh start 5G'
 Restart=always

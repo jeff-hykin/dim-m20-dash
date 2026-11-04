@@ -17,6 +17,8 @@ export type Params = {
     onCable?: boolean
     /** a file setup uploaded to /tmp for this step (tailscale tarball, deno) */
     upload?: string
+    /** the compiled network-safety's sha256 (this release's) */
+    networkSafetySha256?: string
     /** AOS has internet over wlan0 (GOS's uplink through it is safe) */
     aosWlanOnline?: boolean
 }

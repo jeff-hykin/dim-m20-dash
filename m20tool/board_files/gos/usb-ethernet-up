@@ -1,37 +1,125 @@
-#!/bin/sh
-# Bring up a Realtek RTL8153 USB-Ethernet adapter on any link: a fixed fallback address that is always present
-# (so a laptop at $peer can always reach this board), plus DHCP on top when the other end runs a DHCP server.
-# r8152 fails to probe on this kernel (Tx timeout), so use the adapter's CDC-ECM config with cdc_ether.
-fixed=192.168.3.2/24
-peer=192.168.3.1
-for dev in /sys/bus/usb/devices/*; do
-    [ "$(cat "$dev/idVendor" 2>/dev/null):$(cat "$dev/idProduct" 2>/dev/null)" = "0bda:8153" ] || continue
-    [ "$(cat "$dev/bConfigurationValue")" = 2 ] || echo 2 > "$dev/bConfigurationValue"
-done
-# cdc_ether blacklists Realtek ECM when r8152 is built; a dynamic id (driver_info borrowed from ZTE 19d2:1003) overrides that
-echo "0bda 8153 2 19d2 1003" > /sys/bus/usb/drivers/cdc_ether/new_id 2>/dev/null
-for _ in $(seq 1 20); do
-    iface="$(for n in /sys/class/net/*; do readlink -f "$n/device" | grep -q usb && [ "$(basename "$(readlink -f "$n/device/driver")")" = cdc_ether ] && basename "$n"; done | head -1)"
-    [ -n "$iface" ] && break
-    sleep 1
-done
-[ -n "$iface" ] || { echo "no cdc_ether interface"; exit 1; }
-ip link set "$iface" up
-# labelled apart so dhclient-script's "flush label $iface" never removes it
-ip addr del "$fixed" dev "$iface" 2>/dev/null
-ip addr add "$fixed" dev "$iface" label "$iface:fixed"
-echo "usb ethernet up on $iface ($fixed)"
-# a DHCP lease is added beside the fixed address, never replacing it
-dhclient -nw -pf /run/dhclient-"$iface".pid "$iface" 2>/dev/null || true
-# a peer at $peer sharing its internet (~/m20_setup/up.sh on a Mac); high metric so it never beats a real uplink
-ip route replace default via "$peer" dev "$iface" metric 700
-command -v resolvectl >/dev/null && resolvectl dns "$iface" 1.1.1.1 8.8.8.8 && resolvectl domain "$iface" "~."
-# share this link's internet with the other boards (AOS .103, .106 use gos-uplink.service -> default via 10.21.31.104)
-sysctl -qw net.ipv4.ip_forward=1
-iptables -t nat -C POSTROUTING -s 10.21.0.0/16 -o "$iface" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.21.0.0/16 -o "$iface" -j MASQUERADE
-for chain in DOCKER-USER FORWARD; do
-    iptables -C "$chain" -i eth0 -o "$iface" -j ACCEPT 2>/dev/null || iptables -I "$chain" -i eth0 -o "$iface" -j ACCEPT
-    iptables -C "$chain" -i "$iface" -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I "$chain" -i "$iface" -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-done
-# the peer's uplink may be a tunnel (phone tether / VPN) with a smaller MTU; keep forwarded TCP from blackholing
-iptables -t mangle -C FORWARD -o "$iface" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -t mangle -A FORWARD -o "$iface" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+#!/usr/bin/env -S deno run --no-remote --cached-only --no-lock --no-config --no-prompt -A
+// GOS: bring up a Realtek RTL8153 USB-Ethernet adapter on any link: a fixed fallback address that is always there (so
+// a laptop at 192.168.3.1 can always reach this board), plus DHCP on top when the other end runs a DHCP server. r8152
+// fails to probe on this kernel (Tx timeout), so the adapter runs its CDC-ECM config with cdc_ether. Then this link's
+// internet (a laptop sharing its own) is shared with the other boards.
+// No imports: nothing here may need the network to start. Run by usb-ethernet.service (also on every plug, through
+// 90-usb-ethernet.rules); m20tool setup installs all three.
+//   usb-ethernet-up             apply (root)
+//   usb-ethernet-up --dry-run   find the adapter and print what it would do, change nothing
+// M20_TEST_ROOT prefixes /sys (tests only).
+
+const root = Deno.env.get("M20_TEST_ROOT") ?? ""
+const fixed = "192.168.3.2/24"
+const peer = "192.168.3.1"
+const dryRun = Deno.args.includes("--dry-run")
+
+const read = (path) => {
+    try {
+        return Deno.readTextFileSync(path).trim()
+    } catch {
+        return null
+    }
+}
+const write = (path, text) => {
+    if (dryRun) {
+        console.log(`would write ${JSON.stringify(text)} to ${path}`)
+        return
+    }
+    try {
+        Deno.writeTextFileSync(path, text)
+    } catch {
+        // like the shell's `echo ... > file 2>/dev/null`: ignored
+    }
+}
+const list = (dir) => {
+    try {
+        return [...Deno.readDirSync(dir)].map((e) => e.name).sort()
+    } catch {
+        return []
+    }
+}
+const realPath = (path) => {
+    try {
+        return Deno.realPathSync(path)
+    } catch {
+        return ""
+    }
+}
+
+async function run(argv) {
+    if (dryRun) {
+        console.log(`would run: ${argv.join(" ")}`)
+        return { code: 0, missing: false }
+    }
+    try {
+        const out = await new Deno.Command(argv[0], { args: argv.slice(1), stdout: "piped", stderr: "piped" }).output()
+        return { code: out.code, missing: false }
+    } catch {
+        return { code: 127, missing: true }
+    }
+}
+
+// the adapter's CDC-ECM configuration
+for (const name of list(`${root}/sys/bus/usb/devices`)) {
+    const dev = `${root}/sys/bus/usb/devices/${name}`
+    if (`${read(`${dev}/idVendor`)}:${read(`${dev}/idProduct`)}` != "0bda:8153") {
+        continue
+    }
+    if (read(`${dev}/bConfigurationValue`) != "2") {
+        write(`${dev}/bConfigurationValue`, "2\n")
+    }
+}
+// cdc_ether blacklists Realtek ECM when r8152 is built; a dynamic id (driver_info borrowed from ZTE 19d2:1003) overrides that
+write(`${root}/sys/bus/usb/drivers/cdc_ether/new_id`, "0bda 8153 2 19d2 1003\n")
+
+function cdcEtherInterface() {
+    for (const name of list(`${root}/sys/class/net`)) {
+        const net = `${root}/sys/class/net/${name}`
+        const device = realPath(`${net}/device`)
+        if (device.includes("usb") && realPath(`${net}/device/driver`).split("/").pop() == "cdc_ether") {
+            return name
+        }
+    }
+    return ""
+}
+let iface = ""
+for (let i = 0; i < 20; i++) {
+    iface = cdcEtherInterface()
+    if (iface || dryRun) {
+        break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+}
+if (!iface) {
+    console.log("no cdc_ether interface")
+    Deno.exit(1)
+}
+await run(["ip", "link", "set", iface, "up"])
+// labelled apart so dhclient-script's "flush label $iface" never removes it
+await run(["ip", "addr", "del", fixed, "dev", iface])
+await run(["ip", "addr", "add", fixed, "dev", iface, "label", `${iface}:fixed`])
+console.log(`usb ethernet up on ${iface} (${fixed})`)
+// a DHCP lease is added beside the fixed address, never replacing it
+await run(["dhclient", "-nw", "-pf", `/run/dhclient-${iface}.pid`, iface])
+// a peer at 192.168.3.1 sharing its internet; high metric so it never beats a real uplink
+await run(["ip", "route", "replace", "default", "via", peer, "dev", iface, "metric", "700"])
+const dns = await run(["resolvectl", "dns", iface, "1.1.1.1", "8.8.8.8"])
+if (!dns.missing && dns.code == 0) {
+    await run(["resolvectl", "domain", iface, "~."])
+}
+// share this link's internet with the other boards (AOS .103, .106 use gos-uplink.service -> default via 10.21.31.104)
+await run(["sysctl", "-qw", "net.ipv4.ip_forward=1"])
+async function ensure(table, chain, rule, insert) {
+    if ((await run(["iptables", ...table, "-C", chain, ...rule])).code != 0) {
+        return (await run(["iptables", ...table, insert ? "-I" : "-A", chain, ...rule])).code
+    }
+    return 0
+}
+await ensure(["-t", "nat"], "POSTROUTING", ["-s", "10.21.0.0/16", "-o", iface, "-j", "MASQUERADE"], false)
+for (const chain of ["DOCKER-USER", "FORWARD"]) {
+    await ensure([], chain, ["-i", "eth0", "-o", iface, "-j", "ACCEPT"], true)
+    await ensure([], chain, ["-i", iface, "-o", "eth0", "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"], true)
+}
+// the peer's uplink may be a tunnel (phone tether / VPN) with a smaller MTU; keep forwarded TCP from blackholing
+Deno.exit(await ensure(["-t", "mangle"], "FORWARD", ["-o", iface, "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"], false))

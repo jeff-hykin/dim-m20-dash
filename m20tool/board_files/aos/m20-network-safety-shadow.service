@@ -1,0 +1,15 @@
+[Unit]
+Description=M20 network-safety SHADOW: the same decision loop on the real state, in dry-run mode: it changes nothing, it logs what it WOULD do (compare with network-safety's journal)
+After=NetworkManager.service
+StartLimitIntervalSec=0
+
+[Service]
+# reads ~/readme/network_safety/config.json, never writes it; no watchdog and no ExecStopPost: it never touches the radio
+Environment=NETWORK_SAFETY_DIR=/home/user/readme/network_safety NO_COLOR=1
+ExecStart=/usr/local/libexec/m20-network-safety-shadow run --dry-run
+Restart=always
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

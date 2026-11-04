@@ -1,24 +1,122 @@
-#!/bin/sh
-# Keep CLOCK_REALTIME on real time while the robot's PTP time base (2024, no RTC) stays untouched.
-# offset = real time - PHC time, handed to phc2sys as -O via /run/phc2sys-offset (read by phc2sys-real-time).
-# Real time comes from an HTTP Date header, else from PEER (/etc/default/real-time-offset), a computer
-# sharing this PTP clock that already knows the offset. Run every minute by real-time-offset.timer.
-[ -f /etc/default/real-time-offset ] && . /etc/default/real-time-offset
-phc_seconds="$(phc_ctl -q eth0 get 2>&1 | sed -n 's/.*clock time is \([0-9]*\)\..*/\1/p')"
-[ -n "$phc_seconds" ] || exit 0
-offset=""
-real_date="$(curl -sI -m 5 http://www.google.com | sed -n 's/^[Dd]ate: //p' | tr -d '\r')"
-if [ -n "$real_date" ]; then
-    offset=$(( $(date -d "$real_date" +%s) - phc_seconds ))
-    echo "$offset" > /run/phc2sys-offset.verified
-elif [ -n "$PEER" ]; then
-    offset="$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$PEER" cat /run/phc2sys-offset.verified 2>/dev/null)"
-fi
-[ -n "$offset" ] || exit 0
-current="$(cat /run/phc2sys-offset 2>/dev/null || echo 0)"
-difference=$(( offset - current ))
-if [ "$difference" -gt 2 ] || [ "$difference" -lt -2 ]; then
-    echo "$offset" > /run/phc2sys-offset
-    echo "phc2sys offset $current -> $offset s"
-    systemctl restart phc2sys
-fi
+#!/usr/bin/env -S deno run --no-remote --cached-only --no-lock --no-config --no-prompt -A
+// Keep CLOCK_REALTIME on real time while the robot's PTP time base (2024, no RTC) stays untouched.
+// offset = real time - PHC time, handed to phc2sys as -O: phc2sys's drop-in (real-time.conf) reads it from
+// /run/phc2sys-offset.env. Real time comes from an HTTP Date header (plain HTTP: a 2024 clock breaks TLS), else from
+// PEER (/etc/default/real-time-offset), a computer sharing this PTP clock that already knows the offset (over ssh).
+// Run every minute by real-time-offset.timer. No imports: nothing here may need the network to start.
+//   real-time-offset             apply (root): phc2sys restarts only when the offset moved by more than 2 s
+//   real-time-offset --dry-run   print the offset it computes and what it would do, change nothing
+// M20_TEST_ROOT prefixes /run and /etc, M20_TIME_URL replaces the time source (tests only).
+
+const root = Deno.env.get("M20_TEST_ROOT") ?? ""
+const timeUrl = Deno.env.get("M20_TIME_URL") ?? "http://www.google.com"
+const dryRun = Deno.args.includes("--dry-run")
+const decoder = new TextDecoder()
+
+const read = (path) => {
+    try {
+        return Deno.readTextFileSync(path)
+    } catch {
+        return null
+    }
+}
+const write = (path, text) => {
+    if (dryRun) {
+        console.log(`would write ${JSON.stringify(text)} to ${path}`)
+    } else {
+        Deno.writeTextFileSync(path, text)
+    }
+}
+async function run(argv, timeoutSeconds = 20) {
+    try {
+        const out = await new Deno.Command(argv[0], {
+            args: argv.slice(1),
+            stdout: "piped",
+            stderr: "piped",
+            signal: AbortSignal.timeout(timeoutSeconds * 1000),
+        }).output()
+        return { code: out.code, out: decoder.decode(out.stdout) + decoder.decode(out.stderr) }
+    } catch {
+        return { code: 127, out: "" }
+    }
+}
+
+// /etc/default/real-time-offset: shell-style KEY=VALUE lines; only PEER is used
+let peer = ""
+for (const line of (read(`${root}/etc/default/real-time-offset`) ?? "").split("\n")) {
+    const match = line.match(/^\s*PEER=(["']?)(.*)\1\s*$/)
+    if (match) {
+        peer = match[2]
+    }
+}
+
+const phc = (await run(["phc_ctl", "-q", "eth0", "get"])).out.match(/clock time is (\d+)\./)?.[1]
+if (!phc) {
+    if (dryRun) {
+        console.log("no PHC time from phc_ctl: would do nothing")
+    }
+    Deno.exit(0)
+}
+
+let offset = null
+let source = ""
+try {
+    const response = await fetch(timeUrl, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(5000) })
+    await response.body?.cancel()
+    const date = Date.parse(response.headers.get("date") ?? "")
+    if (Number.isFinite(date)) {
+        offset = Math.floor(date / 1000) - Number(phc)
+        source = `the Date header of ${timeUrl}`
+        write(`${root}/run/phc2sys-offset.verified`, `${offset}\n`)
+    }
+} catch {
+    // offline
+}
+if (offset === null && peer) {
+    const reply = await run([
+        "ssh",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        peer,
+        "cat",
+        "/run/phc2sys-offset.verified",
+    ])
+    const value = reply.code == 0 ? reply.out.trim() : ""
+    if (/^-?\d+$/.test(value)) {
+        offset = Number(value)
+        source = `PEER ${peer}`
+    }
+}
+
+const currentText = (read(`${root}/run/phc2sys-offset`) ?? "0").trim()
+const current = /^-?\d+$/.test(currentText) ? Number(currentText) : 0
+let next = current
+if (offset !== null && Math.abs(offset - current) > 2) {
+    next = offset
+}
+if (dryRun) {
+    console.log(
+        offset === null
+            ? `offset: unknown (no Date header, no PEER answer); current ${current}: would do nothing`
+            : `offset: ${offset} s (PHC ${phc}, from ${source}); current ${current}: ${
+                next != current ? `would set ${next} and restart phc2sys` : "unchanged"
+            }`,
+    )
+}
+// phc2sys's drop-in reads the offset from here; kept equal to /run/phc2sys-offset (no restart for that alone)
+const env = `PHC2SYS_OFFSET=${next}\n`
+if (read(`${root}/run/phc2sys-offset.env`) != env) {
+    write(`${root}/run/phc2sys-offset.env`, env)
+}
+if (next != current) {
+    write(`${root}/run/phc2sys-offset`, `${next}\n`)
+    if (!dryRun) {
+        console.log(`phc2sys offset ${current} -> ${next} s`)
+        await run(["systemctl", "restart", "phc2sys"], 60)
+    }
+}
+Deno.exit(0)

@@ -7,7 +7,9 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 TimeoutStartSec=90
-ExecStart=/usr/local/bin/aos-uplink-up
+# a Deno script (no imports), run by the pinned Deno setup installs
+Environment=DENO_DIR=/var/cache/m20-deno DENO_NO_UPDATE_CHECK=1 NO_COLOR=1
+ExecStart=/usr/local/bin/deno run --no-remote --cached-only --no-lock --no-config --no-prompt -A /usr/local/bin/aos-uplink-up
 
 [Install]
 WantedBy=multi-user.target

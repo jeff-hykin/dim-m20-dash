@@ -32,3 +32,22 @@ export async function boardBinary(): Promise<string> {
         `m20tool-${VERSION}-${BOARD_TARGET}`,
     )
 }
+
+/** The compiled network-safety for aarch64 Linux: M20TOOL_NETWORK_SAFETY_BINARY, a local build, else this release's. */
+export async function networkSafetyBinary(): Promise<string> {
+    const name = `m20-network-safety-${BOARD_TARGET}`
+    const given = Deno.env.get("M20TOOL_NETWORK_SAFETY_BINARY")
+    if (given) {
+        return given
+    }
+    if (!compiled()) {
+        const local = new URL(`./dist/${name}`, import.meta.url)
+        try {
+            Deno.statSync(local)
+            return local.pathname
+        } catch {
+            // not built here
+        }
+    }
+    return await download(`https://github.com/${REPO}/releases/download/${RELEASE_TAG}/${name}`, `${VERSION}-${name}`)
+}

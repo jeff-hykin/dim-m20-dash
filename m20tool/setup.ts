@@ -30,7 +30,7 @@ import {
     tailscaleUp,
     upload,
 } from "./remote.ts"
-import { boardBinary } from "./install.ts"
+import { boardBinary, networkSafetyBinary } from "./install.ts"
 import { denoForBoard, tailscaleForBoard } from "./downloads.ts"
 import { redact, registerSecret } from "./scripts.ts"
 import { planLines } from "./board_step.ts"
@@ -451,23 +451,55 @@ function tailscaleStep(board: Board): Step {
     })
 }
 
-function networkSafetyStep(dog: Dog): Step {
-    const id = "aos/network-safety"
+function denoStep(board: Board): Step {
+    const id = `${board.name.toLowerCase()}/deno`
     const deno = needsUpload(
-        dog.aos,
+        board,
         id,
-        "no /usr/local/bin/deno",
+        "no working",
         "deno 2.9.8 aarch64 (github.com/denoland/deno releases)",
         denoForBoard,
     )
     const step = boardStepOf(
-        dog.aos,
+        board,
         id,
-        "AOS: network-safety (hotspot or Wi-Fi on wlan0, always falling back to the hotspot; ~/readme/network_safety.md)",
+        `${board.name}: Deno at /usr/local/bin/deno (what our board services run on; one that's already there is kept)`,
         () => ({ upload: deno.upload() }),
         { before: deno.before, planExtra: deno.planExtra },
     )
     return withCheck(step, deno.checked)
+}
+
+function networkSafetyStep(dog: Dog): Step {
+    const id = "aos/network-safety"
+    let hash = ""
+    const binary = needsUpload(
+        dog.aos,
+        id,
+        "not this build",
+        "the compiled network-safety (aarch64, this release)",
+        networkSafetyBinary,
+    )
+    const step = boardStepOf(
+        dog.aos,
+        id,
+        "AOS: network-safety, compiled at /usr/local/libexec/m20-network-safety (hotspot or Wi-Fi on wlan0, always falling back to the hotspot; ~/readme/network_safety.md)",
+        () => ({ upload: binary.upload(), networkSafetySha256: hash }),
+        { before: binary.before, planExtra: binary.planExtra },
+    )
+    const wrapped = withCheck(step, binary.checked)
+    return {
+        ...wrapped,
+        check: async () => {
+            hash = await sha256File(await networkSafetyBinary())
+            return await wrapped.check()
+        },
+    }
+}
+
+async function sha256File(path: string): Promise<string> {
+    const digest = await crypto.subtle.digest("SHA-256", await Deno.readFile(path))
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")
 }
 
 function aosTimeStep(dog: Dog): Step {
@@ -702,6 +734,8 @@ async function stages(options: SetupOptions, ssid: string, password: string) {
         keyStep(dog.aos, pubkey),
         keyStep(dog.nos, pubkey, true),
         ...installSteps(dog),
+        denoStep(dog.gos),
+        denoStep(dog.aos),
         boardStepOf(
             dog.gos,
             "gos/usb-ethernet",

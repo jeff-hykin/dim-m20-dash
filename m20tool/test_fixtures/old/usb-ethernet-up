@@ -1,0 +1,37 @@
+#!/bin/sh
+# Bring up a Realtek RTL8153 USB-Ethernet adapter on any link: a fixed fallback address that is always present
+# (so a laptop at $peer can always reach this board), plus DHCP on top when the other end runs a DHCP server.
+# r8152 fails to probe on this kernel (Tx timeout), so use the adapter's CDC-ECM config with cdc_ether.
+fixed=192.168.3.2/24
+peer=192.168.3.1
+for dev in /sys/bus/usb/devices/*; do
+    [ "$(cat "$dev/idVendor" 2>/dev/null):$(cat "$dev/idProduct" 2>/dev/null)" = "0bda:8153" ] || continue
+    [ "$(cat "$dev/bConfigurationValue")" = 2 ] || echo 2 > "$dev/bConfigurationValue"
+done
+# cdc_ether blacklists Realtek ECM when r8152 is built; a dynamic id (driver_info borrowed from ZTE 19d2:1003) overrides that
+echo "0bda 8153 2 19d2 1003" > /sys/bus/usb/drivers/cdc_ether/new_id 2>/dev/null
+for _ in $(seq 1 20); do
+    iface="$(for n in /sys/class/net/*; do readlink -f "$n/device" | grep -q usb && [ "$(basename "$(readlink -f "$n/device/driver")")" = cdc_ether ] && basename "$n"; done | head -1)"
+    [ -n "$iface" ] && break
+    sleep 1
+done
+[ -n "$iface" ] || { echo "no cdc_ether interface"; exit 1; }
+ip link set "$iface" up
+# labelled apart so dhclient-script's "flush label $iface" never removes it
+ip addr del "$fixed" dev "$iface" 2>/dev/null
+ip addr add "$fixed" dev "$iface" label "$iface:fixed"
+echo "usb ethernet up on $iface ($fixed)"
+# a DHCP lease is added beside the fixed address, never replacing it
+dhclient -nw -pf /run/dhclient-"$iface".pid "$iface" 2>/dev/null || true
+# a peer at $peer sharing its internet (~/m20_setup/up.sh on a Mac); high metric so it never beats a real uplink
+ip route replace default via "$peer" dev "$iface" metric 700
+command -v resolvectl >/dev/null && resolvectl dns "$iface" 1.1.1.1 8.8.8.8 && resolvectl domain "$iface" "~."
+# share this link's internet with the other boards (AOS .103, .106 use gos-uplink.service -> default via 10.21.31.104)
+sysctl -qw net.ipv4.ip_forward=1
+iptables -t nat -C POSTROUTING -s 10.21.0.0/16 -o "$iface" -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.21.0.0/16 -o "$iface" -j MASQUERADE
+for chain in DOCKER-USER FORWARD; do
+    iptables -C "$chain" -i eth0 -o "$iface" -j ACCEPT 2>/dev/null || iptables -I "$chain" -i eth0 -o "$iface" -j ACCEPT
+    iptables -C "$chain" -i "$iface" -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I "$chain" -i "$iface" -o eth0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+done
+# the peer's uplink may be a tunnel (phone tether / VPN) with a smaller MTU; keep forwarded TCP from blackholing
+iptables -t mangle -C FORWARD -o "$iface" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -t mangle -A FORWARD -o "$iface" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu

@@ -1,18 +1,59 @@
-#!/bin/sh
-# Default route via AOS (10.21.31.103), which shares the office Wi-Fi. At boot eth0 can get its 10.21.31.x
-# address after this runs, so wait for it (bounded) instead of failing; DNS setup is best effort.
-gateway=10.21.31.103
-wait_s=60
-for _ in $(seq 1 "$wait_s"); do
-    dev=$(ip -o -4 addr show | awk '/10\.21\.31\./{print $2; exit}')
-    [ -n "$dev" ] && break
-    sleep 1
-done
-[ -n "$dev" ] || { echo "no 10.21.31.x address after ${wait_s}s"; exit 1; }
-ip route replace default via "$gateway" dev "$dev" metric 600
-echo "default via $gateway dev $dev"
-if command -v resolvectl >/dev/null; then
-    resolvectl dns "$dev" 1.1.1.1 8.8.8.8 || echo "resolvectl dns failed (ignored)"
-    resolvectl domain "$dev" "~." || echo "resolvectl domain failed (ignored)"
-fi
-exit 0
+#!/usr/bin/env -S deno run --no-remote --cached-only --no-lock --no-config --no-prompt -A
+// GOS: default route via AOS (10.21.31.103), which shares its Wi-Fi (office-nat on AOS). At boot eth0 can get its
+// 10.21.31.x address after this runs, so it waits for it (60 s at most) instead of failing; DNS is best effort.
+// No imports: nothing here may need the network to start. Run by aos-uplink.service (m20tool setup installs both).
+//   aos-uplink-up             apply (root)
+//   aos-uplink-up --dry-run   print what it would do, change nothing
+
+const gateway = "10.21.31.103"
+const waitSeconds = 60
+const dryRun = Deno.args.includes("--dry-run")
+
+async function run(argv) {
+    try {
+        const out = await new Deno.Command(argv[0], { args: argv.slice(1), stdout: "piped", stderr: "piped" }).output()
+        return { code: out.code, out: new TextDecoder().decode(out.stdout), missing: false }
+    } catch {
+        return { code: 127, out: "", missing: true }
+    }
+}
+
+/** the first interface `ip -o -4 addr show` lists with a 10.21.31.x address */
+async function internalInterface() {
+    for (const line of (await run(["ip", "-o", "-4", "addr", "show"])).out.split("\n")) {
+        if (/10\.21\.31\./.test(line)) {
+            return line.trim().split(/\s+/)[1]
+        }
+    }
+    return ""
+}
+
+let dev = ""
+for (let i = 0; i < waitSeconds; i++) {
+    dev = await internalInterface()
+    if (dev) {
+        break
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+}
+if (!dev) {
+    console.log(`no 10.21.31.x address after ${waitSeconds}s`)
+    Deno.exit(1)
+}
+const route = ["ip", "route", "replace", "default", "via", gateway, "dev", dev, "metric", "600"]
+if (dryRun) {
+    console.log(`would run: ${route.join(" ")}; resolvectl dns ${dev} 1.1.1.1 8.8.8.8; resolvectl domain ${dev} ~.`)
+    Deno.exit(0)
+}
+await run(route)
+console.log(`default via ${gateway} dev ${dev}`)
+const dns = await run(["resolvectl", "dns", dev, "1.1.1.1", "8.8.8.8"])
+if (!dns.missing) {
+    if (dns.code != 0) {
+        console.log("resolvectl dns failed (ignored)")
+    }
+    if ((await run(["resolvectl", "domain", dev, "~."])).code != 0) {
+        console.log("resolvectl domain failed (ignored)")
+    }
+}
+Deno.exit(0)

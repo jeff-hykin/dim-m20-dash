@@ -6,7 +6,9 @@ After=systemd-udev-settle.service
 Type=oneshot
 # keeps the unit, and with it the dhclient it started, alive after the script returns
 RemainAfterExit=yes
-ExecStart=/usr/local/bin/usb-ethernet-up
+# a Deno script (no imports), run by the pinned Deno setup installs
+Environment=DENO_DIR=/var/cache/m20-deno DENO_NO_UPDATE_CHECK=1 NO_COLOR=1
+ExecStart=/usr/local/bin/deno run --no-remote --cached-only --no-lock --no-config --no-prompt -A /usr/local/bin/usb-ethernet-up
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,24 @@
+#!/bin/sh
+# Keep CLOCK_REALTIME on real time while the robot's PTP time base (2024, no RTC) stays untouched.
+# offset = real time - PHC time, handed to phc2sys as -O via /run/phc2sys-offset (read by phc2sys-real-time).
+# Real time comes from an HTTP Date header, else from PEER (/etc/default/real-time-offset), a computer
+# sharing this PTP clock that already knows the offset. Run every minute by real-time-offset.timer.
+[ -f /etc/default/real-time-offset ] && . /etc/default/real-time-offset
+phc_seconds="$(phc_ctl -q eth0 get 2>&1 | sed -n 's/.*clock time is \([0-9]*\)\..*/\1/p')"
+[ -n "$phc_seconds" ] || exit 0
+offset=""
+real_date="$(curl -sI -m 5 http://www.google.com | sed -n 's/^[Dd]ate: //p' | tr -d '\r')"
+if [ -n "$real_date" ]; then
+    offset=$(( $(date -d "$real_date" +%s) - phc_seconds ))
+    echo "$offset" > /run/phc2sys-offset.verified
+elif [ -n "$PEER" ]; then
+    offset="$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new "$PEER" cat /run/phc2sys-offset.verified 2>/dev/null)"
+fi
+[ -n "$offset" ] || exit 0
+current="$(cat /run/phc2sys-offset 2>/dev/null || echo 0)"
+difference=$(( offset - current ))
+if [ "$difference" -gt 2 ] || [ "$difference" -lt -2 ]; then
+    echo "$offset" > /run/phc2sys-offset
+    echo "phc2sys offset $current -> $offset s"
+    systemctl restart phc2sys
+fi

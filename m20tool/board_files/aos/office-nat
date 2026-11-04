@@ -1,13 +1,49 @@
-#!/bin/sh
-# AOS: NAT the robot's internal networks (GOS .104, .106) out the office Wi-Fi on wlan0; DOCKER-USER so docker's FORWARD policy doesn't drop it
-sysctl -qw net.ipv4.ip_forward=1
-iptables -t nat -C POSTROUTING -s 10.21.0.0/16 -o wlan0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.21.0.0/16 -o wlan0 -j MASQUERADE
-for chain in DOCKER-USER FORWARD; do
-    for lan in eth0 eth1 eth2; do
-        iptables -C "$chain" -i "$lan" -o wlan0 -j ACCEPT 2>/dev/null || iptables -I "$chain" -i "$lan" -o wlan0 -j ACCEPT
-        iptables -C "$chain" -i wlan0 -o "$lan" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I "$chain" -i wlan0 -o "$lan" -m state --state RELATED,ESTABLISHED -j ACCEPT
-    done
-done
-iptables -t mangle -C FORWARD -o wlan0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -t mangle -A FORWARD -o wlan0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
-for spec in "INPUT -i wlan0" "OUTPUT -o wlan0" "FORWARD -o wlan0"; do iptables -C $spec -p udp --dport 7400:7700 -j DROP 2>/dev/null || iptables -I $spec -p udp --dport 7400:7700 -j DROP; done
-exit 0
+#!/usr/bin/env -S deno run --no-remote --cached-only --no-lock --no-config --no-prompt -A
+// AOS: NAT the robot's internal networks (GOS .104, .106) out the Wi-Fi on wlan0 (DOCKER-USER too, so docker's FORWARD
+// policy doesn't drop it), clamp forwarded TCP's MSS, and drop DDS (UDP 7400-7700) on wlan0: the vendor's DDS multicast
+// flooded the Wi-Fi and took the dog offline. Every rule is checked (-C) before it's added, so reruns add nothing.
+// No imports: nothing here may need the network to start. Run by office-nat.service (m20tool setup installs both).
+//   office-nat            apply (root)
+//   office-nat --check    read-only: print each missing rule; exit 1 if any (root, for iptables -C)
+
+async function run(argv) {
+    try {
+        const out = await new Deno.Command(argv[0], { args: argv.slice(1), stdout: "piped", stderr: "piped" }).output()
+        return out.code
+    } catch {
+        return 127
+    }
+}
+
+// [iptables table args, chain, rule, insert (-I) rather than append (-A)]
+const rules = [[["-t", "nat"], "POSTROUTING", ["-s", "10.21.0.0/16", "-o", "wlan0", "-j", "MASQUERADE"], false]]
+for (const chain of ["DOCKER-USER", "FORWARD"]) {
+    for (const lan of ["eth0", "eth1", "eth2"]) {
+        rules.push([[], chain, ["-i", lan, "-o", "wlan0", "-j", "ACCEPT"], true])
+        rules.push([[], chain, ["-i", "wlan0", "-o", lan, "-m", "state", "--state", "RELATED,ESTABLISHED", "-j", "ACCEPT"], true])
+    }
+}
+rules.push([["-t", "mangle"], "FORWARD", ["-o", "wlan0", "-p", "tcp", "--tcp-flags", "SYN,RST", "SYN", "-j", "TCPMSS", "--clamp-mss-to-pmtu"], false])
+for (const [chain, flag] of [["INPUT", "-i"], ["OUTPUT", "-o"], ["FORWARD", "-o"]]) {
+    rules.push([[], chain, [flag, "wlan0", "-p", "udp", "--dport", "7400:7700", "-j", "DROP"], true])
+}
+
+if (Deno.args.includes("--check")) {
+    let missing = 0
+    for (const [table, chain, rule] of rules) {
+        if (await run(["iptables", ...table, "-C", chain, ...rule]) != 0) {
+            console.log(`missing: iptables ${[...table, "-A", chain, ...rule].join(" ")}`)
+            missing++
+        }
+    }
+    console.log(missing ? `${missing} of ${rules.length} rules missing` : `all ${rules.length} rules present`)
+    Deno.exit(missing ? 1 : 0)
+}
+
+await run(["sysctl", "-qw", "net.ipv4.ip_forward=1"])
+for (const [table, chain, rule, insert] of rules) {
+    if (await run(["iptables", ...table, "-C", chain, ...rule]) != 0) {
+        await run(["iptables", ...table, insert ? "-I" : "-A", chain, ...rule])
+    }
+}
+Deno.exit(0)

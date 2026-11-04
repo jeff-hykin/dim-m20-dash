@@ -1,6 +1,6 @@
 title: M20 Ctrl
 spec-version: v1.6
-version: 0.3.5
+version: 0.3.6
 uses:
   '@dimos-gateway':
     - GET history/recordings

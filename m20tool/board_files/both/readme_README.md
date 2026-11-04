@@ -45,14 +45,19 @@ Tailscale (dimensionalos.com tailnet): `m20-gos`, `m20-aos`.
   wifi-sec.psk <password> connection.autoconnect no`.
 - **DDS-flood firewall**: AOS drops UDP 7400-7700 (DDS/ROS 2 discovery and data) on wlan0, in INPUT, OUTPUT and
   FORWARD. The vendor's DDS multicast flooded the Wi-Fi and took the dog offline; keep these rules. They live in
-  `/usr/local/bin/office-nat` (`office-nat.service`), which also NATs the internal net out wlan0 for GOS and NOS.
+  `/usr/local/bin/office-nat` (`office-nat.service`; `office-nat --check` lists any missing rule), which also NATs
+  the internal net out wlan0 for GOS and NOS.
   Local DDS/LCM traffic should stay on `lo` or the wired interfaces.
 - Internet: AOS's Wi-Fi is the uplink. GOS's default route goes via AOS (`aos-uplink.service`, metric 600). With the
   direct cable, `usb-ethernet.service` on GOS adds a default via the laptop (192.168.3.1, metric 700) and NATs the
   internal net out the cable, if the laptop shares its internet.
 - Clock: the boards boot with a 2024 clock from PTP (NOS is the master), which breaks TLS. `real-time-offset.timer`
   (every minute, GOS and AOS) computes real time minus PTP time from an HTTP Date header (AOS asks GOS over ssh as
-  root) and phc2sys applies it (`/etc/systemd/system/phc2sys.service.d/real-time.conf`); PTP itself is untouched.
+  root) and phc2sys applies it (`/etc/systemd/system/phc2sys.service.d/real-time.conf` reads it from
+  `/run/phc2sys-offset.env`); PTP itself is untouched. `real-time-offset --dry-run` shows the offset it computes.
+- Our services (office-nat, real-time-offset, usb-ethernet-up, aos-uplink-up in /usr/local/bin) are standalone Deno
+  scripts with no imports, run by the pinned `/usr/local/bin/deno` (their units' ExecStart). network-safety on AOS is
+  compiled (`/usr/local/libexec/m20-network-safety`) so no Deno change can break it. None of them needs m20tool.
 - GOS's kernel driver r8152 fails on RTL8153 adapters, so it's blacklisted and the adapter runs as cdc_ether
   (`/usr/local/bin/usb-ethernet-up`, `90-usb-ethernet.rules`).
 - Every M20 has the same internal addresses, so ssh host keys for 10.21.31.x / 192.168.3.2 differ between dogs.

@@ -3,4 +3,6 @@ Description=Compute the real-time offset for phc2sys
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/real-time-offset
+# a Deno script (no imports), run by the pinned Deno setup installs
+Environment=DENO_DIR=/var/cache/m20-deno DENO_NO_UPDATE_CHECK=1 NO_COLOR=1
+ExecStart=/usr/local/bin/deno run --no-remote --cached-only --no-lock --no-config --no-prompt -A /usr/local/bin/real-time-offset

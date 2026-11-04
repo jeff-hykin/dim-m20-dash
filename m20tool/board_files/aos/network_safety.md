@@ -77,10 +77,9 @@ stateDiagram-v2
 | Path (on AOS) | What |
 |---|---|
 | `~/readme/network_safety.md` | this file |
-| `~/readme/network_safety/main.js` | the whole tool (Deno, no imports) |
+| `/usr/local/libexec/m20-network-safety` | the whole tool, compiled (`deno compile`, no code cache): needs no Deno, so no Deno install or update can break it. Source: `m20tool/board_files/aos/network_safety_main.js` in github.com/jeff-hykin/dim-m20-dash |
 | `~/readme/network_safety/config.json` | settings plus the saved mode; written by the tool |
 | `/etc/systemd/system/network-safety.service` | the service |
-| `/usr/local/bin/deno` | the Deno binary (2.9.8) the hashbang finds |
 | `host_start.sh` (vendor) | its last line, which ran the vendor's `loop_start_ap.sh`, is commented out on install |
 
 ## What it does
@@ -110,7 +109,7 @@ Only two things are stable: being on the internet, or someone being connected. E
   15 min clock). No inbound session (ssh, ...) over wlan0 for 15 min (`noInternetIdleMinutes`) → AP.
 - **Any failure lands in AP:** an unexpected error inside the loop starts the hotspot. If the process dies or hangs
   (systemd watchdog, 15 min; the loop pings it every pass), `ExecStopPost` starts the hotspot unless it's already up,
-  and `Restart=always` (no start limit, every 30 s) brings the tool back. A missing Deno binary lands the same way.
+  and `Restart=always` (no start limit, every 30 s) brings the tool back. A missing binary lands the same way.
 
 ## System commands it runs
 
@@ -125,22 +124,27 @@ Only two things are stable: being on the internet, or someone being connected. E
 - **Add a Wi-Fi network:** `sudo nmcli connection add type wifi ifname wlan0 con-name <name> ssid <ssid>
   wifi-sec.key-mgmt wpa-psk wifi-sec.psk <password> connection.autoconnect no`. Saved networks must have
   autoconnect off, so NetworkManager never fights the hotspot on its own.
-- **See what it's doing:** `~/readme/network_safety/main.js status`, `main.js dry-run` (every check, changes
-  nothing; works as any user), `journalctl -u network-safety -f`.
+- **See what it's doing:** `NETWORK_SAFETY_DIR=~/readme/network_safety /usr/local/libexec/m20-network-safety status`,
+  the same with `dry-run` (every check, changes nothing; works as any user), `journalctl -u network-safety -f`.
 - **Stop it:** `sudo systemctl disable --now network-safety` (leaves the hotspot up). To hand the radio back to the
   vendor entirely, also restore `host_start.sh` from its `.orig-before-network-safety` backup.
 
-## Install (from a Mac with the files in ~/m20_setup/readme)
+## Install
 
-1. Copy `network_safety.md` and `network_safety/` to `~/readme/` on AOS; `chmod 755 main.js`.
-2. `deno` 2.9.8 aarch64 to `/usr/local/bin/deno`.
-3. Stop the vendor's hotspot babysitter: in `/opt/robot/scripts/board_resources/wifi/host_start.sh` (run by
+`m20tool setup` (github.com/jeff-hykin/dim-m20-dash, `m20tool/`) does all of it, idempotently:
+
+1. The compiled tool to `/usr/local/libexec/m20-network-safety` (when its sha256 isn't this release's), this file to
+   `~/readme/`, `network-safety.service` to `/etc/systemd/system/` (it sets `NETWORK_SAFETY_DIR` to
+   `~/readme/network_safety`, where `config.json` stays).
+2. Stop the vendor's hotspot babysitter: in `/opt/robot/scripts/board_resources/wifi/host_start.sh` (run by
    `start.service`), comment out the last line, `/opt/robot/scripts/wifi/loop_start_ap.sh`, keeping a backup
    (`host_start.sh.orig-before-network-safety`). Don't disable `start.service`: it also starts PTP time sync and eth2.
    Boot still brings the hotspot up; this tool restarts it from then on. Also `rm /etc/m20-hotspot-off` and restore
    `ap_start.sh` from `ap_start.sh.orig-before-hotspot-flag` (the flag guard isn't needed any more).
-4. Turn autoconnect off on saved Wi-Fi profiles; disable the older `m20-wifi-deadman.service` (they would fight).
-5. Install `network-safety.service`, `systemctl enable --now network-safety`.
+3. Turn autoconnect off on saved Wi-Fi profiles; disable the older `m20-wifi-deadman.service` (they would fight).
+4. `systemctl enable network-safety`, and start it only if it isn't running: setup never restarts it (a restart brings
+   the hotspot up), so a running older version switches to the new one at its next restart (crash, watchdog, boot).
+   Older installs ran `~/readme/network_safety/main.js` with `/usr/local/bin/deno`; setup removes that `main.js`.
 
 ## Nuances
 
