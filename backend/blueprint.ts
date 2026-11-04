@@ -63,7 +63,13 @@ export async function gateway(method: string, path: string, body?: unknown): Pro
     return json
 }
 
-export type LiveStream = { name: string; type: string; direction: string | null; module: string; channel: string | null }
+export type LiveStream = {
+    name: string
+    type: string
+    direction: string | null
+    module: string
+    channel: string | null
+}
 export type Peeked = { type: string; value: unknown; ts: number | null; at: number }
 
 export type BlueprintState = {
