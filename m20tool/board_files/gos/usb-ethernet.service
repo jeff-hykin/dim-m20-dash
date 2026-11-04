@@ -1,0 +1,12 @@
+[Unit]
+Description=RTL8153 USB-Ethernet link (fixed 192.168.3.2 plus DHCP)
+After=systemd-udev-settle.service
+
+[Service]
+Type=oneshot
+# keeps the unit, and with it the dhclient it started, alive after the script returns
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/usb-ethernet-up
+
+[Install]
+WantedBy=multi-user.target

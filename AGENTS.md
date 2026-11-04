@@ -5,21 +5,27 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
 
 ## Layout
 
-- `backend/` (Deno, no dependencies at runtime): `main.ts` serves the API and `frontend/`; `routes.ts` is every
-  endpoint (dimos.yaml's `provides:` repeats them: `deno task check-endpoints [--write]`).
+- `backend/` (Deno, no dependencies at runtime): `main.ts` serves the API and `frontend/`; `routes.ts` is every endpoint
+  (dimos.yaml's `provides:` repeats them: `deno task check-endpoints [--write]`).
   - `stats.ts`: the stats loop each board runs over ssh, and its parser. `boards.ts`: one source per board (ssh or
     fake), a TCP probe of port 22, the indicators. `fake.ts`: simulated boards whose state changes over time.
   - `blueprint.ts`: blueprint mode (GET active, active/streams, peek, active/modules; motion = M20Connection's RPCs).
+  - `basic_server.ts`: the vendor basic_server protocol (frames, tables), shared with `m20tool/`.
   - `robot.ts`: the M20's own status (motion, gait, charging, e-stop, batteries, joint temperatures, errors) from AOS's
     basic_server reports (UDP 10.21.31.103:30000). On its own it sends only the heartbeat (`robot_test.ts` checks);
     commands go through its command() / usageMode() from `direct.ts` only. Needs `--unstable-net`. With the fake boards
     it simulates the robot (starts sitting, regular control mode).
-  - `direct.ts`: driving readiness per mode, Enable driving (`m20 stand` / `m20 direct`: the robot resets its usage mode on every stand and undock, so the CLI sets it after standing), stand up / undock through `m20`, and direct mode's axis-command loop.
+  - `direct.ts`: driving readiness per mode, Enable driving (`m20 stand` / `m20 direct`: the robot resets its usage mode
+    on every stand and undock, so the CLI sets it after standing), stand up / undock through `m20`, and direct mode's
+    axis-command loop.
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl), with the Record options of
     `record_streams.ts` (stream groups, rate caps, label, folder, splitting). The live topics come raw through
     `zenoh_tap.py`, which `tap.ts` runs with DIMOS_APP's `dimosPython` against its `zenohConnect` (subscribe only).
-    `syslogs.ts`: the recording's system logs (Go2 Ctrl's health.rs for each board, over one more read-only ssh
-    while recording: health every 2 s, journal warnings, network-safety, AOS's basic_server log, health dumps). `settings.ts`: `<dataDir>/settings.json`.
+    `syslogs.ts`: the recording's system logs (Go2 Ctrl's health.rs for each board, over one more read-only ssh while
+    recording: health every 2 s, journal warnings, network-safety, AOS's basic_server log, health dumps). `settings.ts`:
+    `<dataDir>/settings.json`.
+- `m20tool/`: the M20 setup + robot CLI (Deno, compiled per target, released as `m20tool-v<version>`, installed on its
+  own by `m20tool/install.sh`; on the boards `~/.local/bin/m20`, which M20 Ctrl calls, runs it). See its README.md.
 - `frontend/` (React + Vite, like G1 Ctrl and Go2 Ctrl; `frontend/dist` is built and committed so no robot builds it):
   `src/App.tsx` the page (main view = camera or 3D, panels on the left, command dock, d-pad / phone thumb sticks);
   `live.ts` the live topics through Desktop's zenoh-gateway (pose from tf/slam_odom, slam_body_points, local_map,
@@ -32,8 +38,8 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
 
 - `deno task test` (fake ssh, fake boards, a fake dimos gateway, and the drive loop against a stand-in zenoh client: no
   robot needed). After a frontend change: `deno task build` (tsc + vite into `frontend/dist`) and commit `dist` too.
-- `deno task fake` → http://localhost:8788 with simulated boards; add `M20_DASH_DESKTOP_URL=http://127.0.0.1:5555`
-  to use a running Desktop's dimos gateway (blueprint mode).
+- `deno task fake` → http://localhost:8788 with simulated boards; add `M20_DASH_DESKTOP_URL=http://127.0.0.1:5555` to
+  use a running Desktop's dimos gateway (blueprint mode).
 - No blueprint to hand: `deno task fake-gateway` (a stand-in dimos gateway with an M20 blueprint, port 8790) and
   `deno task demo` (fake boards against it). With the fake boards the page also fakes the robot: a room, a lidar scan,
   test-card cameras, and a pose the drive moves; nothing goes to zenoh.

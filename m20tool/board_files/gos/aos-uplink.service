@@ -1,0 +1,13 @@
+[Unit]
+Description=Default route via AOS (10.21.31.103), which shares the office Wi-Fi (office-nat on AOS)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=90
+ExecStart=/usr/local/bin/aos-uplink-up
+
+[Install]
+WantedBy=multi-user.target

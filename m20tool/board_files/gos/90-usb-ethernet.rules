@@ -1,0 +1,2 @@
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0bda", ATTR{idProduct}=="8153", RUN+="/bin/systemctl --no-block restart usb-ethernet.service"
+ACTION=="add", SUBSYSTEM=="net", DRIVERS=="cdc_ether", RUN+="/bin/systemctl --no-block restart usb-ethernet.service"

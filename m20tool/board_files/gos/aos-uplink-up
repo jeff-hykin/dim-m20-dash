@@ -1,0 +1,18 @@
+#!/bin/sh
+# Default route via AOS (10.21.31.103), which shares the office Wi-Fi. At boot eth0 can get its 10.21.31.x
+# address after this runs, so wait for it (bounded) instead of failing; DNS setup is best effort.
+gateway=10.21.31.103
+wait_s=60
+for _ in $(seq 1 "$wait_s"); do
+    dev=$(ip -o -4 addr show | awk '/10\.21\.31\./{print $2; exit}')
+    [ -n "$dev" ] && break
+    sleep 1
+done
+[ -n "$dev" ] || { echo "no 10.21.31.x address after ${wait_s}s"; exit 1; }
+ip route replace default via "$gateway" dev "$dev" metric 600
+echo "default via $gateway dev $dev"
+if command -v resolvectl >/dev/null; then
+    resolvectl dns "$dev" 1.1.1.1 8.8.8.8 || echo "resolvectl dns failed (ignored)"
+    resolvectl domain "$dev" "~." || echo "resolvectl domain failed (ignored)"
+fi
+exit 0

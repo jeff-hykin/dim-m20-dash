@@ -1,0 +1,6 @@
+[Unit]
+Description=Compute the real-time offset for phc2sys
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/real-time-offset

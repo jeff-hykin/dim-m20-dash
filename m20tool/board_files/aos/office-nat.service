@@ -1,0 +1,11 @@
+[Unit]
+Description=AOS shares its office Wi-Fi (wlan0) with GOS and the other boards
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/office-nat
+
+[Install]
+WantedBy=multi-user.target

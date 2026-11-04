@@ -1,0 +1,3 @@
+#!/bin/sh
+# phc2sys with the real-time offset kept by real-time-offset (0 = the robot's original behavior)
+exec /usr/sbin/phc2sys -m -s eth0 -c CLOCK_REALTIME -w -O "$(cat /run/phc2sys-offset 2>/dev/null || echo 0)"

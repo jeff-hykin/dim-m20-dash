@@ -1,0 +1,13 @@
+#!/bin/sh
+# AOS: NAT the robot's internal networks (GOS .104, .106) out the office Wi-Fi on wlan0; DOCKER-USER so docker's FORWARD policy doesn't drop it
+sysctl -qw net.ipv4.ip_forward=1
+iptables -t nat -C POSTROUTING -s 10.21.0.0/16 -o wlan0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s 10.21.0.0/16 -o wlan0 -j MASQUERADE
+for chain in DOCKER-USER FORWARD; do
+    for lan in eth0 eth1 eth2; do
+        iptables -C "$chain" -i "$lan" -o wlan0 -j ACCEPT 2>/dev/null || iptables -I "$chain" -i "$lan" -o wlan0 -j ACCEPT
+        iptables -C "$chain" -i wlan0 -o "$lan" -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I "$chain" -i wlan0 -o "$lan" -m state --state RELATED,ESTABLISHED -j ACCEPT
+    done
+done
+iptables -t mangle -C FORWARD -o wlan0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu 2>/dev/null || iptables -t mangle -A FORWARD -o wlan0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+for spec in "INPUT -i wlan0" "OUTPUT -o wlan0" "FORWARD -o wlan0"; do iptables -C $spec -p udp --dport 7400:7700 -j DROP 2>/dev/null || iptables -I $spec -p udp --dport 7400:7700 -j DROP; done
+exit 0

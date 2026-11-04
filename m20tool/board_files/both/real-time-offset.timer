@@ -1,0 +1,9 @@
+[Unit]
+Description=Recheck the real-time offset for phc2sys every minute
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=60s
+
+[Install]
+WantedBy=timers.target

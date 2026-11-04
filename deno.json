@@ -3,13 +3,15 @@
     "tasks": {
         "dev": "deno run -A --unstable-net --watch backend/main.ts",
         "fake": "M20_DASH_SOURCE=fake deno run -A --unstable-net backend/main.ts",
-        "test": "deno test -A --unstable-net backend/ && deno test -A --no-check frontend/test/",
+        "test": "deno test -A --unstable-net backend/ m20tool/ && deno test -A --no-check frontend/test/",
         "build": "cd frontend && npm ci && npm run build",
         "typecheck": "cd frontend && npx tsc --noEmit",
         "check": "deno check backend/main.ts && deno task check-endpoints",
         "check-endpoints": "deno run -A scripts/check_endpoints.ts",
         "fake-gateway": "deno run -A backend/fake_gateway.ts",
-        "demo": "M20_DASH_SOURCE=fake M20_DASH_DESKTOP_URL=http://127.0.0.1:8790 deno run -A --unstable-net backend/main.ts"
+        "demo": "M20_DASH_SOURCE=fake M20_DASH_DESKTOP_URL=http://127.0.0.1:8790 deno run -A --unstable-net backend/main.ts",
+        "m20tool": "deno run -A --unstable-net m20tool/main.ts",
+        "m20tool-build": "deno run -A m20tool/build.ts"
     },
     "fmt": {
         "indentWidth": 4,
@@ -19,20 +21,30 @@
             "backend",
             "scripts",
             "frontend/src",
-            "frontend/test"
+            "frontend/test",
+            "m20tool"
         ],
         "exclude": [
-            "frontend/src/dim-app"
+            "frontend/src/dim-app",
+            "m20tool/board_files"
         ]
     },
     "lint": {
         "include": [
             "backend",
-            "scripts"
+            "scripts",
+            "m20tool"
+        ],
+        "exclude": [
+            "m20tool/board_files"
         ]
     },
     "imports": {
         "@std/assert": "jsr:@std/assert@1",
-        "@std/yaml": "jsr:@std/yaml@1"
+        "@std/yaml": "jsr:@std/yaml@1",
+        "@std/encoding": "jsr:@std/encoding@1",
+        "@cliffy/command": "jsr:@cliffy/command@1.0.0-rc.7",
+        "dax": "https://esm.sh/dax-sh@0.42.0",
+        "fflate": "https://esm.sh/fflate@0.8.2"
     }
 }
