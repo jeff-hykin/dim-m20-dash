@@ -5,7 +5,16 @@ import { applySettings, blueprint, boards, robot } from "./app.ts"
 import { MOTIONS } from "./blueprint.ts"
 import { fakeBoards } from "./boards.ts"
 import { HttpError, type Info, type Route } from "./http.ts"
-import { listRecordings, record, recordingStatus, recordLog, startRecording, stopRecording } from "./recording.ts"
+import {
+    listRecordings,
+    record,
+    recordingFile,
+    recordingStatus,
+    recordLog,
+    startRecording,
+    stopRecording,
+} from "./recording.ts"
+import { GROUPS } from "./record_streams.ts"
 import { type Mode, settings, updateSettings } from "./settings.ts"
 
 export const INFO: Info = {
@@ -195,10 +204,13 @@ export const routes: Route[] = [
         method: "POST",
         path: "api/record/start",
         when: "you need to record the M20's board stats (and, in blueprint mode, the blueprint's streams) to an mcap",
-        description: "Record to an .mcap in Desktop's recordings folder (m20/<date>_<time>_m20_<host>.mcap): " +
-            "/boards/<board>/stats and /link, in blueprint mode /blueprint/<stream> (each watched stream, sampled " +
-            "once a second), /robot_action and /logs. Runs until api/record/stop or the app quits. Returns its status " +
-            "(as GET api/record); if one is already running, that one's",
+        description:
+            "Record to an .mcap in Desktop's recordings folder (m20/[<folder>/]<date>_<time>_m20_<host>[_<label>]" +
+            ".mcap) what the Record options pick (GET api/record/options): the live topics raw (cameras, lidar, map, " +
+            "pose, tf, driving and commands; each with its rate cap), the robot status reports, the board stats, the " +
+            "blueprint samples; always /robot_action and /logs. Splits into _partN files by the options' minutes / MB. " +
+            "Runs until api/record/stop or the app quits. Returns its status (as GET api/record); if one is already " +
+            "running, that one's",
         handler: () =>
             startRecording(undefined, {
                 mode: settings().mode,
@@ -207,7 +219,7 @@ export const routes: Route[] = [
                 // each board's link as the recording starts (later changes go on /boards/<board>/link)
                 links: boards.summary().map(({ name, reachable, link }) => ({ name, reachable, link: link.state })),
                 blueprint: settings().mode === "blueprint" ? blueprint.state.blueprint : null,
-            }),
+            }, settings().recordOptions),
     },
     {
         method: "POST",
@@ -217,6 +229,53 @@ export const routes: Route[] = [
             "Stop the recording and finish its file: {active: false, stopped: true, file, path, bytes, messages}, or " +
             "{active: false, stopped: false} if none was running",
         handler: () => stopRecording(),
+    },
+    {
+        method: "GET",
+        path: "api/record/options",
+        when: "you want to know what M20 Ctrl's recordings hold, or what can be recorded",
+        description:
+            "The Record options: {options {streams {<group>: {on, maxHz (null: its own rate)}}, label, folder, " +
+            "splitMinutes, splitMb}, groups [{id, label, about, keys (zenoh keys, recorded raw), fullRate}]}",
+        handler: () => ({ options: settings().recordOptions, groups: GROUPS }),
+    },
+    {
+        method: "PUT",
+        path: "api/record/options",
+        when: "you need to change what M20 Ctrl records (streams, rate caps, file label, folder, splitting)",
+        description:
+            "Change the Record options (any subset; a stream group you leave out keeps its setting); they apply from " +
+            "the next recording. Returns them; 400 if invalid",
+        params: {
+            streams: {
+                type: "object",
+                description: "{<group id>: {on: bool, maxHz: number|null}} (ids: GET api/record/options)",
+            },
+            label: { type: "string", description: "added to the file name: letters, digits, - and _" },
+            folder: { type: "string", description: 'a folder inside m20/ ("" for m20/ itself)' },
+            splitMinutes: { type: "number", description: "a new _partN file after this many minutes (null: never)" },
+            splitMb: { type: "number", description: "a new _partN file after this many MB (null: never)" },
+        },
+        handler: (args) => {
+            const current = settings().recordOptions
+            const streams = { ...current.streams }
+            for (const [id, choice] of Object.entries((args.streams ?? {}) as Record<string, object>)) {
+                if (!(id in streams)) {
+                    throw new HttpError(400, `no stream group ${id}`)
+                }
+                streams[id as keyof typeof streams] = { ...streams[id as keyof typeof streams], ...choice }
+            }
+            const { streams: _, ...rest } = args
+            return updateSettings({ recordOptions: { ...current, ...rest, streams } as never }).recordOptions
+        },
+    },
+    {
+        method: "GET",
+        path: "api/recordings/download",
+        when: "you need one of M20 Ctrl's recording files",
+        description: "The .mcap itself (as a download); file is a name GET api/recordings lists. 404 for anything else",
+        params: { file: { type: "string", description: "the file, as GET api/recordings names it", required: true } },
+        handler: ({ file }) => recordingFile(String(file)),
     },
     {
         method: "GET",

@@ -5,6 +5,7 @@ import { type BoardConfig, DEFAULT_BOARDS, type SourceKind } from "./boards.ts"
 import { dataDir } from "./dimos_app.ts"
 import { HttpError } from "./http.ts"
 import { DEFAULT_PATTERNS, type Patterns } from "./stats.ts"
+import { DEFAULT_RECORD_OPTIONS, type RecordOptions, validRecordOptions } from "./record_streams.ts"
 
 export type Mode = "blueprint" | "direct"
 
@@ -17,6 +18,8 @@ export type Settings = {
     blueprintStreams: string[]
     /** where basic_server's status reports come from (AOS; heartbeats only, never a command) */
     robotStatus: { host: string; port: number }
+    /** what the Record button records (record_streams.ts) */
+    recordOptions: RecordOptions
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -27,6 +30,7 @@ export const DEFAULT_SETTINGS: Settings = {
     // M20Connection's small streams: its pose, the robot's motion/gait state, readiness, the velocity it sends
     blueprintStreams: ["odom", "motion_state", "gait_state", "command_ready", "cmd_vel"],
     robotStatus: { host: "10.21.31.103", port: 30000 },
+    recordOptions: DEFAULT_RECORD_OPTIONS,
 }
 
 let current: Settings = structuredClone(DEFAULT_SETTINGS)
@@ -98,6 +102,11 @@ function validate(next: Settings): Settings {
         !Number.isInteger(next.robotStatus.port)
     ) {
         throw new HttpError(400, "robotStatus must be {host, port}")
+    }
+    try {
+        next.recordOptions = validRecordOptions(next.recordOptions)
+    } catch (error) {
+        throw new HttpError(400, `recordOptions: ${(error as Error).message}`)
     }
     if (!Array.isArray(next.blueprintStreams) || next.blueprintStreams.some((s) => typeof s !== "string")) {
         throw new HttpError(400, "blueprintStreams must be a list of stream names")

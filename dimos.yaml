@@ -159,10 +159,12 @@ provides:
     /api/record/start:
       post:
         description: >-
-          Record to an .mcap in Desktop's recordings folder (m20/<date>_<time>_m20_<host>.mcap): /boards/<board>/stats
-          and /link, in blueprint mode /blueprint/<stream> (each watched stream, sampled once a second), /robot_action
-          and /logs. Runs until api/record/stop or the app quits. Returns its status (as GET api/record); if one is
-          already running, that one's
+          Record to an .mcap in Desktop's recordings folder (m20/[<folder>/]<date>_<time>_m20_<host>[_<label>].mcap)
+          what the Record options pick (GET api/record/options): the live topics raw (cameras, lidar, map, pose, tf,
+          driving and commands; each with its rate cap), the robot status reports, the board stats, the blueprint
+          samples; always /robot_action and /logs. Splits into _partN files by the options' minutes / MB. Runs until
+          api/record/stop or the app quits. Returns its status (as GET api/record); if one is already running, that
+          one's
         x-when: 'you need to record the M20''s board stats (and, in blueprint mode, the blueprint''s streams) to an mcap'
     /api/record/stop:
       post:
@@ -170,6 +172,49 @@ provides:
           Stop the recording and finish its file: {active: false, stopped: true, file, path, bytes, messages}, or
           {active: false, stopped: false} if none was running
         x-when: you need to stop M20 Ctrl's recording
+    /api/record/options:
+      get:
+        description: >-
+          The Record options: {options {streams {<group>: {on, maxHz (null: its own rate)}}, label, folder,
+          splitMinutes, splitMb}, groups [{id, label, about, keys (zenoh keys, recorded raw), fullRate}]}
+        x-when: 'you want to know what M20 Ctrl''s recordings hold, or what can be recorded'
+      put:
+        description: >-
+          Change the Record options (any subset; a stream group you leave out keeps its setting); they apply from the
+          next recording. Returns them; 400 if invalid
+        x-when: 'you need to change what M20 Ctrl records (streams, rate caps, file label, folder, splitting)'
+        requestBody:
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  streams:
+                    type: object
+                    description: '{<group id>: {on: bool, maxHz: number|null}} (ids: GET api/record/options)'
+                  label:
+                    type: string
+                    description: 'added to the file name: letters, digits, - and _'
+                  folder:
+                    type: string
+                    description: a folder inside m20/ ("" for m20/ itself)
+                  splitMinutes:
+                    type: number
+                    description: 'a new _partN file after this many minutes (null: never)'
+                  splitMb:
+                    type: number
+                    description: 'a new _partN file after this many MB (null: never)'
+    /api/recordings/download:
+      get:
+        summary: The .mcap itself (as a download); file is a name GET api/recordings lists. 404 for anything else
+        x-when: you need one of M20 Ctrl's recording files
+        parameters:
+          - name: file
+            in: query
+            schema:
+              type: string
+            required: true
+            description: 'the file, as GET api/recordings names it'
     /api/recordings:
       get:
         description: >-

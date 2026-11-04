@@ -110,12 +110,31 @@ export class McapWriter {
         return channel
     }
 
+    /** A channel of raw payloads (dimos' mcap layout: no schema, the codec as the message encoding, `dimos.*`
+     * metadata), made on first use. */
+    rawChannel(topic: string, messageEncoding: string, metadata: Record<string, string>): Channel {
+        const known = this.#channels.get(topic)
+        if (known) {
+            return known
+        }
+        const id = this.#channels.size + 1
+        const content = new Bytes().u16(id).u16(0).string(topic).string(messageEncoding).map(Object.entries(metadata))
+        const channel = { id, topic, schemaId: 0, record: record(OP.channel, content) }
+        this.#channels.set(topic, channel)
+        this.#append(channel.record)
+        return channel
+    }
+
     /** One message; `timeNs` is when it happened (log and publish time). */
     write(channel: Channel, timeNs: bigint, message: unknown) {
+        this.writeBytes(channel, timeNs, encoder.encode(JSON.stringify(message)))
+    }
+
+    /** One message's bytes as they are (a raw channel's payload). */
+    writeBytes(channel: Channel, timeNs: bigint, data: Uint8Array) {
         if (this.closed) {
             return
         }
-        const data = encoder.encode(JSON.stringify(message))
         const content = new Bytes().u16(channel.id).u32(this.#sequence++).u64(timeNs).u64(timeNs).push(data)
         this.#append(record(OP.message, content))
         this.messages++
@@ -242,11 +261,14 @@ export function readMcap(bytes: Uint8Array): { topic: string; logTimeNs: bigint;
             topics.set(id, decoder.decode(bytes.subarray(start + 8, start + 8 + topicLength)))
         } else if (op === OP.message) {
             const id = view.getUint16(start, true)
-            out.push({
-                topic: topics.get(id) ?? "?",
-                logTimeNs: view.getBigUint64(start + 6, true),
-                message: JSON.parse(decoder.decode(bytes.subarray(start + 22, start + length))),
-            })
+            const payload = bytes.subarray(start + 22, start + length)
+            let message: unknown = payload // a raw channel's bytes
+            try {
+                message = JSON.parse(decoder.decode(payload))
+            } catch {
+                // not JSON
+            }
+            out.push({ topic: topics.get(id) ?? "?", logTimeNs: view.getBigUint64(start + 6, true), message })
         } else if (op === OP.dataEnd) {
             break
         }
