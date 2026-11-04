@@ -5,6 +5,7 @@
 import { $ } from "dax"
 import { encodeBase64 } from "@std/encoding/base64"
 import { BOARD_PASSWORD } from "./dog.ts"
+import { redact } from "./scripts.ts"
 
 export type Board = {
     name: "GOS" | "AOS" | "NOS"
@@ -76,12 +77,19 @@ function passwordEnv(password: boolean): Record<string, string> {
         : {}
 }
 
-/** A shell command line that runs `script` (as root with `root`), without temp files or stdin. */
-export function wrap(script: string, root: boolean): string {
-    const b64 = encodeBase64(new TextEncoder().encode(script))
+/** A shell command line that runs `script` (as root with `root`), without temp files or stdin. With `secret`, the
+ * secret arrives on stdin and goes into a 0600 temp file (never argv, so never in the process list); the script reads
+ * it into $M20_SECRET and deletes the file first thing. */
+export function wrap(script: string, root: boolean, secret = false): string {
+    const body = secret ? `M20_SECRET=$(cat "$M20_SECRET_FILE"); rm -f "$M20_SECRET_FILE"\n${script}` : script
+    const b64 = encodeBase64(new TextEncoder().encode(body))
     const decode = `"$(printf %s ${b64} | base64 -d)"`
+    const env = secret ? `env M20_SECRET_FILE="$f" ` : ""
     // sudo -S reads the password (a single apostrophe, \047) from the pipe; on GOS (NOPASSWD) it's never read
-    return root ? `printf '\\047\\n' | sudo -S -p '' sh -c ${decode}` : `sh -c ${decode}`
+    const command = root ? `printf '\\047\\n' | sudo -S -p '' ${env}sh -c ${decode}` : `${env}sh -c ${decode}`
+    return secret
+        ? `umask 077; f=$(mktemp /tmp/m20tool-secret.XXXXXX); cat > "$f"; ${command}; rc=$?; rm -f "$f"; exit $rc`
+        : command
 }
 
 export type RunResult = { code: number; stdout: string; stderr: string }
@@ -90,19 +98,24 @@ export type RunResult = { code: number; stdout: string; stderr: string }
 export async function run(
     board: Board,
     script: string,
-    options: { root?: boolean; password?: boolean; stdinPath?: string; timeoutSeconds?: number } = {},
+    options: { root?: boolean; password?: boolean; stdinPath?: string; timeoutSeconds?: number; secret?: string } = {},
 ): Promise<RunResult> {
-    let command = $`ssh ${sshArgs(board, !!options.password)} ${wrap(script, !!options.root)}`
+    const secret = options.secret !== undefined
+    let command = $`ssh ${sshArgs(board, !!options.password)} ${wrap(script, !!options.root, secret)}`
         .env(passwordEnv(!!options.password))
         .noThrow()
         .stdout("piped")
         .stderr("piped")
-    command = options.stdinPath ? command.stdin($.path(options.stdinPath)) : command.stdin("null")
+    command = secret
+        ? command.stdinText(options.secret!)
+        : options.stdinPath
+        ? command.stdin($.path(options.stdinPath))
+        : command.stdin("null")
     if (options.timeoutSeconds) {
         command = command.timeout(options.timeoutSeconds * 1000)
     }
     const result = await command
-    return { code: result.code, stdout: result.stdout.trim(), stderr: result.stderr.trim() }
+    return { code: result.code, stdout: redact(result.stdout.trim()), stderr: redact(result.stderr.trim()) }
 }
 
 /** Runs `script` on `board` with the terminal attached (for `tailscale up`'s login link); its exit code. */

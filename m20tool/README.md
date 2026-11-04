@@ -73,6 +73,10 @@ every step with the commands it would run.
    - m20tool itself on GOS and AOS (`/usr/local/bin/m20tool`, `~/.local/bin/m20`).
 4. Prints the dog's addresses and logins as an `~/.ssh/config` block.
 
+The Wi-Fi password never shows: plans, dry runs, logs and errors print `********`, and it reaches AOS only over ssh's
+stdin into a 0600 temp file the script reads and deletes at once, then nmcli's stdin (its edit mode), never a command
+line, so it isn't in the boards' process list.
+
 Docs on each board: `~/readme/README.md` (the boards, network layout and quirks, network-safety, the DDS-flood firewall,
 m20tool, recovery; source `board_files/both/readme_README.md`), `~/AGENTS.md` (points there, plus the networking rules)
 and `~/CLAUDE.local.md` (points to `~/AGENTS.md`). Each is a block between `<!-- m20tool:begin ... -->` /

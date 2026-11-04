@@ -4,7 +4,7 @@
 # Linux x86_64/aarch64 (glibc), macOS x86_64/arm64. Goes to /usr/local/bin (with sudo if needed), else ~/.local/bin;
 # M20TOOL_INSTALL_DIR picks the folder, M20TOOL_VERSION the release.
 set -e
-version="${M20TOOL_VERSION:-0.3.4}"
+version="${M20TOOL_VERSION:-0.3.5}"
 repo="jeff-hykin/dim-m20-dash"
 
 case "$(uname -s)" in

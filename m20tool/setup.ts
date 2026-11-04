@@ -20,7 +20,7 @@ import {
 } from "./dog.ts"
 import { type Board, describe, keyWorks, run, runInteractive, sshPortOpen, upload } from "./remote.ts"
 import { boardBinary, installedCheckScript, installOnBoardScript } from "./install.ts"
-import { CheckScript, q, Script } from "./scripts.ts"
+import { CheckScript, MASK, q, redact, registerSecret, Script } from "./scripts.ts"
 import { denoForBoard, tailscaleForBoard } from "./downloads.ts"
 
 export type SetupOptions = {
@@ -47,8 +47,8 @@ const HOME = Deno.env.get("HOME") ?? "."
 const fileText = (path: string) => Deno.readTextFileSync(new URL(`./board_files/${path}`, import.meta.url))
 
 /** Runs a check script (as root with `root`) on `board`. */
-async function runCheck(board: Board, check: CheckScript, root = false): Promise<Check> {
-    const result = await run(board, check.text(), { root, timeoutSeconds: 60 })
+async function runCheck(board: Board, check: CheckScript, root = false, secret?: string): Promise<Check> {
+    const result = await run(board, check.text(), { root, timeoutSeconds: 60, secret })
     if (result.code === 255) {
         throw new Error(`can't reach ${board.name} (${describe(board)}): ${result.stderr}`)
     }
@@ -60,10 +60,10 @@ async function runCheck(board: Board, check: CheckScript, root = false): Promise
 }
 
 /** Runs an apply script; throws with its output when it fails. */
-async function runApply(board: Board, script: Script, extra: { stdinPath?: string } = {}) {
+async function runApply(board: Board, script: Script, extra: { stdinPath?: string; secret?: string } = {}) {
     const result = await run(board, script.text(), { root: script.root, timeoutSeconds: 600, ...extra })
     if (result.stdout) {
-        console.log(result.stdout.replace(/^/gm, "    "))
+        console.log(redact(result.stdout).replace(/^/gm, "    "))
     }
     if (result.code !== 0) {
         throw new Error(`${board.name}: exit ${result.code}: ${result.stderr || result.stdout}`)
@@ -752,21 +752,36 @@ function bandsStep(dog: Dog): Step {
     }
 }
 
-function wifiStep(dog: Dog, ssid: string, password: string): Step {
+/** The password never goes in a script or a command line: the scripts get it as $M20_SECRET (remote.ts's `secret`), and
+ * nmcli gets it on stdin (its edit mode), so it's not in the boards' process list; printed plans show MASK. */
+export function wifiStep(dog: Dog, ssid: string, password: string): Step {
     const name = `m20tool-${ssid.replace(/[^\w.-]/g, "_")}`
-    const security = password ? `wifi-sec.key-mgmt wpa-psk wifi-sec.psk ${q(password)}` : ""
+    const secret = password || undefined
+    const setPsk = (profile: string) =>
+        `printf 'set 802-11-wireless-security.key-mgmt wpa-psk\\nset 802-11-wireless-security.psk %s\\nsave persistent\\nquit\\n' "$M20_SECRET" | nmcli connection edit id ${profile} >/dev/null`
     const find =
         `found=$(${WIFI_PROFILES} | while IFS= read -r c; do [ "$(nmcli -g 802-11-wireless.ssid connection show "$c")" = ${
             q(ssid)
         } ] && { printf %s "$c"; break; }; done)`
     const current =
         `cur=$(nmcli -g GENERAL.CONNECTION device show wlan0); curssid=""; [ -n "$cur" ] && curssid=$(nmcli -g 802-11-wireless.ssid connection show "$cur" 2>/dev/null)`
-    const script = () =>
-        new Script(true).line(
+    const script = () => {
+        const s = new Script(true).line(
             find,
-            `if [ -n "$found" ]; then nmcli connection modify "$found" ${security} connection.autoconnect no 802-11-wireless.band ""; else nmcli connection add type wifi ifname wlan0 con-name ${
-                q(name)
-            } ssid ${q(ssid)} ${security} connection.autoconnect no; fi`,
+            `if [ -z "$found" ]; then nmcli connection add type wifi ifname wlan0 con-name ${q(name)} ssid ${
+                q(ssid)
+            } connection.autoconnect no >/dev/null; found=${q(name)}; fi`,
+            `nmcli connection modify "$found" connection.autoconnect no 802-11-wireless.band ""`,
+        )
+        if (password) {
+            const real = `# the password, on nmcli's stdin (never its command line)\n${setPsk('"$found"')}`
+            s.real.push(real)
+            s.shown.push(
+                `# the password, on nmcli's stdin (never its command line)`,
+                `printf 'set 802-11-wireless-security.key-mgmt wpa-psk\\nset 802-11-wireless-security.psk %s\\nsave persistent\\nquit\\n' '${MASK}' | nmcli connection edit id "$found"`,
+            )
+        }
+        return s.line(
             "# saved networks never autoconnect: network-safety alone decides between the hotspot and Wi-Fi",
             `${WIFI_PROFILES} | while IFS= read -r c; do nmcli connection modify "$c" connection.autoconnect no; done`,
             current,
@@ -774,6 +789,7 @@ function wifiStep(dog: Dog, ssid: string, password: string): Step {
                 q(ssid)
             } ]; then sed -i 's/"savedMode": *"[A-Za-z]*"/"savedMode": "wifiInternet"/' /home/user/readme/network_safety/config.json 2>/dev/null; systemctl restart network-safety; fi`,
         )
+    }
     return {
         title: `AOS: join Wi-Fi "${ssid}" (saved for network-safety, which joins it) and verify it`,
         where: "AOS",
@@ -784,9 +800,7 @@ function wifiStep(dog: Dog, ssid: string, password: string): Step {
                     find,
                     `[ -n "$found" ] || echo "TODO no saved network for this SSID"`,
                     password
-                        ? `[ -z "$found" ] || [ "$(nmcli -s -g 802-11-wireless-security.psk connection show "$found")" = ${
-                            q(password)
-                        } ] || echo "TODO the saved password differs"`
+                        ? `[ -z "$found" ] || [ "$(nmcli -s -g 802-11-wireless-security.psk connection show "$found")" = "$M20_SECRET" ] || echo "TODO the saved password differs"`
                         : "true",
                     `${WIFI_PROFILES} | while IFS= read -r c; do [ "$(nmcli -g connection.autoconnect connection show "$c")" = no ] || echo "TODO $c autoconnects (would fight network-safety)"; done`,
                     current,
@@ -798,13 +812,14 @@ function wifiStep(dog: Dog, ssid: string, password: string): Step {
                     } ] || ping -I wlan0 -c1 -W4 1.1.1.1 >/dev/null 2>&1 || echo "TODO joined, but no internet over wlan0"`,
                 ),
                 true,
+                secret,
             ),
         plan: () => [
             ...planOf(dog.aos, script()),
             "then waits up to 6 min (network-safety: hotspot down, scan both bands, join, hold 60 s) for wlan0 to be on it, and pings 1.1.1.1 over wlan0",
         ],
         apply: async () => {
-            await runApply(dog.aos, script())
+            await runApply(dog.aos, script(), { secret })
             const check = new CheckScript().line(
                 current,
                 `[ "$curssid" = ${q(ssid)} ] || echo "TODO not joined yet"`,
@@ -936,14 +951,14 @@ export async function runStep(step: Step, dryRun: boolean): Promise<boolean> {
         return false
     }
     const tag = check.skip ? "[skip]" : check.done ? "[done]" : "[todo]"
-    console.log(`${tag} ${step.title}${check.detail ? `\n       ${check.detail}` : ""}`)
+    console.log(redact(`${tag} ${step.title}${check.detail ? `\n       ${check.detail}` : ""}`))
     if (dryRun) {
         const plan = step.plan()
         if (plan.length) {
             console.log(
                 `       ${check.done ? "already done: runs nothing. If it weren't, it would run" : "would run"}:`,
             )
-            plan.forEach((line) => console.log(`         ${line}`))
+            plan.forEach((line) => console.log(redact(`         ${line}`)))
         }
         return true
     }
@@ -953,7 +968,7 @@ export async function runStep(step: Step, dryRun: boolean): Promise<boolean> {
     try {
         await step.apply()
     } catch (error) {
-        console.log(`       FAILED: ${(error as Error).message}`)
+        console.log(redact(`       FAILED: ${(error as Error).message}`))
         return false
     }
     const after = await step.check().catch((error) => ({ done: false, detail: (error as Error).message }))
@@ -1006,6 +1021,7 @@ export async function setup(options: SetupOptions) {
     if (ssid && password === undefined) {
         password = await $.prompt(`Password for "${ssid}" (empty = an open network):`, { mask: true, noClear: true })
     }
+    registerSecret(password)
     if (options.dryRun) {
         console.log("DRY RUN: only read-only checks run; every change is printed, none is made.\n")
     }

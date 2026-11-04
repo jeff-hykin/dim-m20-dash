@@ -1,6 +1,24 @@
 // Shell scripts for the boards: what they really run (file contents as base64) and how they read to a person.
 import { encodeBase64 } from "@std/encoding/base64"
 
+/** what a secret looks like in anything m20tool prints */
+export const MASK = "********"
+const secrets = new Set<string>()
+/** From now on, `redact` masks `secret` (the Wi-Fi password) wherever it shows up. */
+export function registerSecret(secret: string | undefined) {
+    if (secret) {
+        secrets.add(secret)
+    }
+}
+/** `text` with every registered secret replaced by MASK */
+export function redact(text: string): string {
+    let out = text
+    for (const secret of secrets) {
+        out = out.replaceAll(secret, MASK)
+    }
+    return out
+}
+
 /** a shell word in single quotes */
 export const q = (word: string) => `'${word.replaceAll("'", "'\\''")}'`
 export const b64 = (text: string) => encodeBase64(new TextEncoder().encode(text))
