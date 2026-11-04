@@ -62,7 +62,7 @@ function state(withHistory: boolean) {
 /** Direct mode's stand up / lie down / dock / stop, through basic_server. */
 async function directMotion(action: string, dryRun: boolean) {
     if (action === "standup") {
-        return await direct.standForDirect(dryRun)
+        return await direct.runCli("direct", dryRun)
     }
     if (action === "liedown") {
         return await direct.lieDown(dryRun)
@@ -151,20 +151,29 @@ export const routes: Route[] = [
         when: "the M20 should stand up, lie down, dock to charge or stop",
         description:
             `MOVES THE ROBOT. action: ${Object.keys(MOTIONS).join(", ")}. Blueprint mode: the running blueprint's ` +
-            "M20Connection standup / liedown / dock / stop_movement RPC through the dimos gateway (409 when no " +
-            "blueprint with M20Connection runs or it lacks that RPC). Direct mode: the robot's basic_server: standup = " +
-            "regular control mode, stand, RL control; liedown = zero axes, sit; dock = `m20 dock`; stop = zero axes. " +
+            "M20Connection liedown / dock / stop_movement RPC through the dimos gateway (409 when no blueprint with " +
+            "M20Connection runs or it lacks that RPC); standup = `m20 stand` (stand, RL control, navigation mode, " +
+            "agile stairs gait). Direct mode: standup = `m20 direct` (stand, RL control, regular mode, basic gait); " +
+            "liedown = zero axes, sit; dock = `m20 dock`; stop = zero axes. Either mode: undock = `m20 undock` (leave " +
+            "the dock, then stand). " +
             "dock starts self-charging (the robot must stand still about 2 m in front of the dock, facing it). " +
             "Returns {ok, result, error} (or {dryRun, wouldCall|wouldDo})",
         params: {
-            action: { type: "string", description: "standup, liedown, dock or stop", required: true },
+            action: { type: "string", description: "standup, liedown, dock, undock or stop", required: true },
             dryRun: { type: "boolean", description: "validate and return what would be called, without calling it" },
         },
         handler: async ({ action, dryRun }) => {
             const dry = bool(dryRun, "dryRun")
-            const result = settings().mode === "direct"
-                ? await directMotion(String(action ?? ""), dry)
-                : await blueprint.motion(String(action ?? ""), dry)
+            const name = String(action ?? "")
+            // stand up and undock go through `m20` in either mode: it stands first and sets the usage mode after (the
+            // robot resets it on every stand and undock), which M20Connection's standup doesn't
+            const result = name === "undock"
+                ? await direct.runCli("undock", dry)
+                : name === "standup" && settings().mode === "blueprint"
+                ? await direct.runCli("stand", dry)
+                : settings().mode === "direct"
+                ? await directMotion(name, dry)
+                : await blueprint.motion(name, dry)
             if (!dry) {
                 logLine(`motion ${action}: ${JSON.stringify(result)}`)
                 record("/robot_action", { action, ...result })
@@ -178,13 +187,13 @@ export const routes: Route[] = [
         when: "the M20 won't drive (GET api/state's driving says why) and should be made ready to",
         description:
             "MOVES THE ROBOT (it stands up). Puts the robot in the state the current mode drives in. Blueprint mode: " +
-            "`m20 stand` (navigation control mode, stand, RL control, gait; refuses on the dock). Direct mode: " +
-            "regular control mode, stand, RL control. Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)",
+            "`m20 stand` (stand, RL control, navigation mode, agile stairs gait; refuses on the dock). Direct mode: " +
+            "`m20 direct` (stand, RL control, regular mode, basic gait). Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)",
         params: { dryRun: { type: "boolean", description: "say what it would do, without doing it" } },
         handler: async ({ dryRun }) => {
             const dry = bool(dryRun, "dryRun")
             const result = settings().mode === "direct"
-                ? await direct.standForDirect(dry)
+                ? await direct.runCli("direct", dry)
                 : await direct.runCli("stand", dry)
             if (!dry) {
                 record("/robot_action", { action: "enable_driving", mode: settings().mode, ...result })

@@ -62,18 +62,27 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         assertEquals(started.active, true)
         assertMatch(started.file, /_m20_.*\.mcap$/)
 
-        // motion: dryRun calls nothing; a real one goes to the blueprint's RPC; bad actions are refused
-        const dry = (await call("POST", "api/motion", { action: "standup", dryRun: true })).json
-        assertEquals(dry.wouldCall, "POST active/modules/m20connection/rpcs/standup")
+        // motion: dryRun calls nothing; stand up is `m20 stand` (simulated here: it stands, then sets navigation mode,
+        // which the robot resets on every stand); the rest go to the blueprint's RPCs; bad actions are refused
+        const dry = (await call("POST", "api/motion", { action: "liedown", dryRun: true })).json
+        assertEquals(dry.wouldCall, "POST active/modules/m20connection/rpcs/liedown")
+        assertMatch(
+            (await call("POST", "api/motion", { action: "standup", dryRun: true })).json.wouldDo[0],
+            /m20 stand/,
+        )
         assertEquals(gateway.calls, [])
+        await until(async () => (await call("GET", "api/state")).json.robot.link === "up")
         const stood = await call("POST", "api/motion", { action: "standup" })
         assertEquals(stood.status, 200)
         assertEquals(stood.json.ok, true)
-        await call("POST", "api/motion", { action: "stop" })
-        assertEquals(gateway.calls, [
-            'm20connection.standup {"args":[],"kwargs":{}}',
-            'm20connection.stop_movement {"args":[],"kwargs":{}}',
+        const afterStand = (await call("GET", "api/robot")).json.basic
+        assertEquals([afterStand.motionName, afterStand.usage, afterStand.gaitName], [
+            "RL control",
+            "navigation",
+            "stairs (agile)",
         ])
+        await call("POST", "api/motion", { action: "stop" })
+        assertEquals(gateway.calls, ['m20connection.stop_movement {"args":[],"kwargs":{}}'])
         assertEquals((await call("POST", "api/motion", { action: "backflip" })).status, 400)
 
         await new Promise((resolve) => setTimeout(resolve, 2500))
@@ -109,16 +118,15 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         await until(async () => (await call("GET", "api/boards/gos")).json.indicators.network.level === "bad")
         await call("PUT", "api/fake", { board: "gos", clear: true })
 
-        // direct mode: through the (simulated) robot's basic_server, nothing to the gateway. The simulated robot
-        // starts sitting in regular mode: driving is refused (and says why) until Enable driving stands it up
+        // direct mode: through the (simulated) robot's basic_server, nothing to the gateway. The robot stood up for the
+        // blueprint above (navigation mode): direct driving is refused (and says why) until Enable driving (m20 direct)
         assertEquals((await call("PUT", "api/mode", { mode: "direct" })).json.mode, "direct")
-        await until(async () => (await call("GET", "api/state")).json.robot.link === "up")
-        const sitting = (await call("GET", "api/state")).json.driving
-        assertEquals([sitting.ok, sitting.fixable], [false, true])
-        assertMatch(sitting.reason, /sitting, not standing/)
+        const navMode = (await call("GET", "api/state")).json.driving
+        assertEquals([navMode.ok, navMode.fixable], [false, true])
+        assertMatch(navMode.reason, /navigation control mode/)
         assertEquals((await call("POST", "api/direct/move", { x: 0.5, durationMs: 300 })).status, 409)
         const enableDry = await call("POST", "api/drive/enable", { dryRun: true })
-        assertMatch(enableDry.json.wouldDo.join(" "), /regular/)
+        assertMatch(enableDry.json.wouldDo.join(" "), /m20 direct/)
         assertEquals((await call("POST", "api/drive/enable")).json.ok, true)
         assertEquals((await call("GET", "api/state")).json.driving.ok, true)
         assertEquals((await call("POST", "api/direct/move", { x: 2 })).status, 400, "axes are -1..1")
@@ -127,7 +135,7 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         // the move lapses on its own (the deadman), zeros follow
         await until(async () => (await call("GET", "api/robot")).json.motion.vx === 0)
         assertEquals((await call("GET", "api/blueprint")).status, 200)
-        assertEquals(gateway.calls.length, 2)
+        assertEquals(gateway.calls.length, 1, "only the stop went to the gateway")
 
         // blueprint mode: regular control mode won't follow the blueprint; Enable driving runs (simulated) m20 stand
         await call("PUT", "api/mode", { mode: "blueprint" })
@@ -146,7 +154,7 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         gateway.setRunning(false)
         await until(async () => (await call("GET", "api/blueprint")).json.running === false)
         assertEquals((await call("POST", "api/motion", { action: "liedown" })).status, 409)
-        assertEquals(gateway.calls.length, 2)
+        assertEquals(gateway.calls.length, 1, "only the stop went to the gateway")
 
         // settings: validation, then a save that persists
         assertEquals((await call("PUT", "api/settings", { boards: [] })).status, 400)
@@ -181,12 +189,16 @@ Deno.test(
             const lying = (await call("POST", "api/motion", { action: "dock" })).json
             assertEquals(lying.ok, true)
             assertMatch(lying.result, /^Not docking: the robot is not standing/)
-            await call("POST", "api/motion", { action: "standup" })
+            // (m20-nav standing the dog: its own RPC, called here directly)
+            await fetch(new URL("active/modules/m20connection/rpcs/standup", gateway.url), {
+                method: "POST",
+                body: "{}",
+            })
             const docking = (await call("POST", "api/motion", { action: "dock" })).json
             assertMatch(docking.result, /^Docking\./)
             assertEquals(gateway.calls, [
                 'm20connection.dock {"args":[],"kwargs":{}}',
-                'm20connection.standup {"args":[],"kwargs":{}}',
+                "m20connection.standup {}",
                 'm20connection.dock {"args":[],"kwargs":{}}',
             ])
 
@@ -210,6 +222,11 @@ Deno.test(
             assertEquals((await call("POST", "api/motion", { action: "dock" })).json.ok, true)
             assertEquals(gateway.calls.length, 3)
             await until(async () => /dock|charging/.test((await call("GET", "api/state")).json.driving.reason ?? ""))
+            // undock: `m20 undock` (leave the dock, then `m20 stand`: navigation mode, so direct mode needs Enable driving)
+            assertEquals((await call("POST", "api/motion", { action: "undock" })).json.ok, true)
+            const undocked = (await call("GET", "api/robot")).json.basic
+            assertEquals([undocked.chargeName, undocked.usage], ["not charging", "navigation"])
+            assertMatch((await call("GET", "api/state")).json.driving.reason, /navigation control mode/)
         } finally {
             stopApp()
             await gateway.server.shutdown()

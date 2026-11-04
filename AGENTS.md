@@ -14,7 +14,7 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
     basic_server reports (UDP 10.21.31.103:30000). On its own it sends only the heartbeat (`robot_test.ts` checks);
     commands go through its command() / usageMode() from `direct.ts` only. Needs `--unstable-net`. With the fake boards
     it simulates the robot (starts sitting, regular control mode).
-  - `direct.ts`: driving readiness per mode, Enable driving, and direct mode's axis-command loop and stand/lie down.
+  - `direct.ts`: driving readiness per mode, Enable driving (`m20 stand` / `m20 direct`: the robot resets its usage mode on every stand and undock, so the CLI sets it after standing), stand up / undock through `m20`, and direct mode's axis-command loop.
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl), with the Record options of
     `record_streams.ts` (stream groups, rate caps, label, folder, splitting). The live topics come raw through
     `zenoh_tap.py`, which `tap.ts` runs with DIMOS_APP's `dimosPython` against its `zenohConnect` (subscribe only). `settings.ts`: `<dataDir>/settings.json`.

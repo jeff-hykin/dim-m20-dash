@@ -3,10 +3,12 @@
 //
 // The two ways to drive need the robot in different usage modes:
 //   blueprint mode: the page publishes tele_cmd_vel; m20-nav's bridge hands it to the robot's navigation path, which the
-//     robot follows only in NAVIGATION usage mode (1) and RL control (17). The fix is `m20 stand` (the CLI: navigation
-//     mode, stand, RL control, gait; it refuses on the dock).
+//     robot follows only in NAVIGATION usage mode (1) and RL control (17). The fix is `m20 stand` (the CLI: stand, RL
+//     control, navigation mode, agile stairs gait; it refuses on the dock).
 //   direct mode: axis commands (2/21, X/Y/Yaw as -1..1 of the robot's top speed) at 20 Hz, which the robot follows only
-//     in REGULAR usage mode (0), standing (1) or in RL control (17). The fix: regular mode, stand, RL control.
+//     in REGULAR usage mode (0), standing (1) or in RL control (17). The fix is `m20 direct` (stand, RL control,
+//     regular mode, basic gait).
+// The robot resets its usage mode to regular on every stand and undock, so the CLI sets the mode after standing.
 // Direct driving has its own deadman: a move holds for at most MOVE_HOLD_MAX_MS unless renewed (the page renews it every
 // 150 ms while a drive input is held); when it lapses, or on stop, zeros go out for a moment, then nothing.
 // Everything here runs only from a request (a click, a held drive input, an agent call). With the fake boards it drives
@@ -91,6 +93,8 @@ export class Direct {
     #stopFrames = 0
     #timer: number | null = null
     #busy: string | null = null
+    /** the simulated robot's dock: entering, then charging a moment later */
+    #fakeDocking: number | undefined
 
     constructor(readonly robot: Robot, readonly cli: () => string) {}
 
@@ -215,41 +219,6 @@ export class Direct {
         })
     }
 
-    /** Stand and take RL control in REGULAR usage mode, basic gait: what direct driving needs (MOVES THE ROBOT). */
-    standForDirect(dryRun = false) {
-        const plan = [
-            "usage mode → regular (1101/5 Mode 0)",
-            "stand (2/22 1) unless standing",
-            "RL control (2/22 17)",
-            "gait → basic (2/23 0x1001)",
-        ]
-        return this.#run("enable direct driving", dryRun, plan, async () => {
-            const b = this.robot.state.basic
-            if (b && CHARGE_BUSY.has(b.charge)) {
-                throw new Error(`the robot is ${b.chargeName}: undock it first`)
-            }
-            const code = await this.robot.usageMode(USAGE_REGULAR)
-            if (code !== 0) {
-                throw new Error(`basic_server refused regular mode (ErrorCode ${code})`)
-            }
-            const motion = () => this.robot.state.basic?.motion
-            if (motion() !== MOTION_RL) {
-                if (motion() !== MOTION_STAND) {
-                    await this.robot.command(2, 22, { MotionParam: MOTION_STAND })
-                    if (!(await this.#wait(() => motion() === MOTION_STAND, 12_000))) {
-                        throw new Error("the robot did not confirm Stand within 12 s")
-                    }
-                }
-                await this.robot.command(2, 22, { MotionParam: MOTION_RL })
-                if (!(await this.#wait(() => motion() === MOTION_RL, 5000))) {
-                    throw new Error("the robot did not confirm RL control within 5 s")
-                }
-            }
-            await this.#setGait(GAIT_BASIC)
-            return "standing in RL control, regular mode, basic gait: direct driving works"
-        })
-    }
-
     /** Lie down: zeros, then Sit (2/22 4) (MOVES THE ROBOT). */
     lieDown(dryRun = false) {
         return this.#run("lie down", dryRun, ["zero axes", "sit (2/22 4)"], async () => {
@@ -261,8 +230,10 @@ export class Direct {
         })
     }
 
-    /** The `m20` CLI (stand: navigation mode, stand, RL control, gait; dock): for blueprint mode and docking. */
-    runCli(action: "stand" | "dock", dryRun = false) {
+    /** The `m20` CLI on GOS: stand (Stand, RL control, THEN navigation mode, agile stairs gait: the robot resets its
+     * usage mode to regular on every stand and undock, so the mode has to come after), direct (the same with regular
+     * mode and the Basic gait), dock, undock (leave the dock, then stand). It checks the robot reports each step. */
+    runCli(action: "stand" | "direct" | "dock" | "undock", dryRun = false) {
         const cli = this.cli()
         const plan = [`${cli} ${action}${dryRun ? " --dry-run" : ""}`]
         if (this.robot.state.source === "fake") {
@@ -271,19 +242,36 @@ export class Direct {
                 const fake = this.robot.fake!
                 if (action === "dock") {
                     fake.charge = 1
-                    setTimeout(() => (fake.charge = 2), 3000)
+                    this.#fakeDocking = setTimeout(() => (fake.charge = 2), 3000)
                     return "Docking. (simulated)"
                 }
-                if (CHARGE_BUSY.has(fake.charge)) {
+                if (action === "undock") {
+                    if (fake.charge === 0) {
+                        throw new Error("not undocking: the robot is not on the dock")
+                    }
+                    clearTimeout(this.#fakeDocking)
+                    fake.charge = 3
+                    await sleep(1500)
+                    fake.charge = 0
+                    fake.usage = USAGE_REGULAR // the robot resets it on undock
+                } else if (CHARGE_BUSY.has(fake.charge)) {
                     throw new Error("not going to stand: the robot is on the dock (m20 undock first)")
                 }
-                await this.robot.usageMode(USAGE_NAVIGATION)
+                // stand and RL control first: the robot resets the usage mode to regular when it stands
                 await this.robot.command(2, 22, { MotionParam: MOTION_STAND })
                 await this.#wait(() => this.robot.state.basic?.motion === MOTION_STAND, 5000)
+                fake.usage = USAGE_REGULAR
                 await this.robot.command(2, 22, { MotionParam: MOTION_RL })
                 await this.#wait(() => this.robot.state.basic?.motion === MOTION_RL, 5000)
-                await this.#setGait(GAIT_AGILE_STAIRS)
-                return "standing in RL control, navigation mode, agile stairs gait (simulated)"
+                const direct = action === "direct"
+                await this.robot.usageMode(direct ? USAGE_REGULAR : USAGE_NAVIGATION)
+                await this.#setGait(GAIT_BASIC)
+                if (!direct) {
+                    await this.#setGait(GAIT_AGILE_STAIRS)
+                }
+                return direct
+                    ? "standing in RL control, regular mode, basic gait (simulated)"
+                    : "standing in RL control, navigation mode, agile stairs gait (simulated)"
             })
         }
         return this.#run(`m20 ${action}`, dryRun, plan, async () => {

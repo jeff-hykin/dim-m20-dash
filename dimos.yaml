@@ -91,9 +91,10 @@ provides:
       post:
         description: >-
           MOVES THE ROBOT. action: standup, liedown, dock, stop. Blueprint mode: the running blueprint's M20Connection
-          standup / liedown / dock / stop_movement RPC through the dimos gateway (409 when no blueprint with
-          M20Connection runs or it lacks that RPC). Direct mode: the robot's basic_server: standup = regular control
-          mode, stand, RL control; liedown = zero axes, sit; dock = `m20 dock`; stop = zero axes. dock starts
+          liedown / dock / stop_movement RPC through the dimos gateway (409 when no blueprint with M20Connection runs or
+          it lacks that RPC); standup = `m20 stand` (stand, RL control, navigation mode, agile stairs gait). Direct
+          mode: standup = `m20 direct` (stand, RL control, regular mode, basic gait); liedown = zero axes, sit; dock =
+          `m20 dock`; stop = zero axes. Either mode: undock = `m20 undock` (leave the dock, then stand). dock starts
           self-charging (the robot must stand still about 2 m in front of the dock, facing it). Returns {ok, result,
           error} (or {dryRun, wouldCall|wouldDo})
         x-when: 'the M20 should stand up, lie down, dock to charge or stop'
@@ -105,7 +106,7 @@ provides:
                 properties:
                   action:
                     type: string
-                    description: 'standup, liedown, dock or stop'
+                    description: 'standup, liedown, dock, undock or stop'
                   dryRun:
                     type: boolean
                     description: 'validate and return what would be called, without calling it'
@@ -115,8 +116,8 @@ provides:
       post:
         description: >-
           MOVES THE ROBOT (it stands up). Puts the robot in the state the current mode drives in. Blueprint mode: `m20
-          stand` (navigation control mode, stand, RL control, gait; refuses on the dock). Direct mode: regular control
-          mode, stand, RL control. Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)
+          stand` (stand, RL control, navigation mode, agile stairs gait; refuses on the dock). Direct mode: `m20 direct`
+          (stand, RL control, regular mode, basic gait). Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)
         x-when: the M20 won't drive (GET api/state's driving says why) and should be made ready to
         requestBody:
           content:

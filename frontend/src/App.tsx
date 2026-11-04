@@ -49,7 +49,7 @@ const DPAD: { key: keyof typeof KEY_AXES; cls: string; icon: string; help: strin
 ]
 
 type Motion = {
-    action: "standup" | "liedown" | "dock" | "enable" | "direct" | "gait"
+    action: "standup" | "liedown" | "dock" | "undock" | "enable" | "direct" | "gait"
     label: string
     rpc: string
     tone: string
@@ -64,10 +64,10 @@ const enableMotion = (mode: "blueprint" | "direct"): Motion => ({
     tone: "good",
     title: "Put the robot in the state this mode drives in",
     warn: mode === "blueprint"
-        ? "Runs <b>m20 stand</b>: navigation control mode, then the robot <b>STANDS UP</b> into RL control and its " +
-            "walking gait (steps already done are skipped). It refuses on the dock. Make sure nothing is around its legs."
-        : "Switches the robot to <b>regular control mode</b> (the one that takes direct commands), then it <b>STANDS " +
-            "UP</b> into RL control. Make sure nothing is around its legs.",
+        ? "Runs <b>m20 stand</b>: the robot <b>STANDS UP</b> into RL control, then navigation control mode and the " +
+            "agile stairs gait (steps already done are skipped). It refuses on the dock. Make sure nothing is around its legs."
+        : "Runs <b>m20 direct</b>: the robot <b>STANDS UP</b> into RL control, then regular control mode (the one that " +
+            "takes direct commands) and the basic gait. Make sure nothing is around its legs.",
 })
 const DIRECT_SWITCH: Motion = {
     action: "direct",
@@ -97,8 +97,10 @@ const MOTIONS: Motion[] = [
         label: "Stand up",
         rpc: "standup",
         tone: "good",
-        title: "Stand up (M20Connection.standup)",
-        warn: "The robot <b>stands up</b> and takes its walking gait. Make sure nothing and no one is around its legs.",
+        title: "Stand up (m20 stand in blueprint mode, m20 direct in direct mode)",
+        warn:
+            "The robot <b>stands up</b> into RL control, then the control mode and gait this mode drives in (m20 stand " +
+            "in blueprint mode, m20 direct in direct mode). Make sure nothing and no one is around its legs.",
     },
     {
         action: "liedown",
@@ -117,6 +119,15 @@ const MOTIONS: Motion[] = [
         warn:
             "The robot <b>walks onto the charging dock</b>. It must already stand still about 2 m in front of the dock, " +
             "facing it with both reflectors in view (it can't find the dock from elsewhere).",
+    },
+    {
+        action: "undock",
+        label: "Undock",
+        rpc: "",
+        tone: "warn",
+        title: "Undock (m20 undock): leave the dock, then stand up ready for blueprint driving",
+        warn: "The robot <b>walks off the charging dock</b>, then <b>stands</b> in RL control, navigation mode (m20 " +
+            "undock, then m20 stand). Make sure the way off the dock is clear.",
     },
 ]
 
@@ -696,7 +707,15 @@ export function App() {
         if (!state) {
             return "waiting for the backend"
         }
-        if (state.mode === "direct") {
+        const onDock = [1, 2, 3, 5].includes(state.robot.basic?.charge ?? -1)
+        if (m.action === "undock") {
+            return state.robot.link !== "up"
+                ? "no status from the robot's basic_server"
+                : onDock
+                ? null
+                : "not on the dock"
+        }
+        if (state.mode === "direct" || m.action === "standup") {
             return state.robot.link === "up" ? null : "no status from the robot's basic_server"
         }
         if (!bp?.running) {
