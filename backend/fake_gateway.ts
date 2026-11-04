@@ -21,7 +21,12 @@ const STREAMS = [
     ["cmd_vel", "dimos.msgs.geometry_msgs.Twist", "out", "m20connection"],
     ["front_camera", "dimos.msgs.sensor_msgs.CompressedVideo", "out", "m20camerarelay"],
     ["slam_body_points", "dimos.msgs.sensor_msgs.PointCloud2", "in", "raytracingvoxelmap"],
+    // m20-nav's teleop input: MovementManager muxes it with the planner's and sends cmd_vel
+    ["tele_cmd_vel", "dimos.msgs.geometry_msgs.Twist", "in", "movementmanager"],
 ]
+
+/** what the real gateway gives as a stream's channel: dimos/<name>/<package>.<Type> */
+const channelOf = (name: string, type: string) => `dimos/${name}/${type.split(".").slice(-2).join(".")}`
 
 export function startFakeGateway(port = 0, recordingsPath: string | null = null): FakeGateway {
     const calls: string[] = []
@@ -81,7 +86,7 @@ export function startFakeGateway(port = 0, recordingsPath: string | null = null)
                     name,
                     type,
                     direction,
-                    channel: `/${name}`,
+                    channel: channelOf(name, type),
                     module,
                 })),
             })

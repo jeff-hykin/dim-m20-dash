@@ -63,7 +63,7 @@ export async function gateway(method: string, path: string, body?: unknown): Pro
     return json
 }
 
-export type LiveStream = { name: string; type: string; direction: string | null; module: string }
+export type LiveStream = { name: string; type: string; direction: string | null; module: string; channel: string | null }
 export type Peeked = { type: string; value: unknown; ts: number | null; at: number }
 
 export type BlueprintState = {
@@ -145,11 +145,13 @@ export class Blueprint {
                 this.state.peeked = {}
             } else {
                 const { streams } = await gateway("GET", "active/streams") as { streams: LiveStream[] }
-                this.state.streams = streams.map(({ name, type, direction, module }) => ({
+                // channel: the stream's zenoh key (dimos/<topic>/<type>), which the page subscribes and drives on
+                this.state.streams = streams.map(({ name, type, direction, module, channel }) => ({
                     name,
                     type,
                     direction,
                     module,
+                    channel: channel ?? null,
                 }))
                 if (newRun || !this.state.connection) {
                     const { modules } = await gateway("GET", "active/modules") as {
