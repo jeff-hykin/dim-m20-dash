@@ -5,9 +5,15 @@
 //
 //   main.js status     anyone: the config and what wlan0 is doing now
 //   main.js run        root: the service loop (systemd: network-safety.service)
+//   main.js run --dry-run   the same loop on the real state, changing nothing: no hotspot start/stop, no join or
+//                      disconnect, no rescan, no config write. It logs each change it WOULD make ("WOULD run: ...")
+//                      and every input when it changes ("input ..."): the shadow next to the real service
+//                      (m20-network-safety-shadow.service), to compare their decisions.
 //   main.js dry-run    root or not: one pass of every check, changing nothing
 
-const configPath = `${import.meta.dirname}/config.json`
+// its folder (config.json): NETWORK_SAFETY_DIR (the compiled tool's unit sets it), else this file's
+const configDir = Deno.env.get("NETWORK_SAFETY_DIR") ?? import.meta.dirname
+const configPath = `${configDir}/config.json`
 const modes = ["ap", "wifiInternet", "wifiNoInternet"]
 const defaults = {
     // written on every entry to a Discovery state; boot resumes that Discovery
@@ -40,6 +46,8 @@ const defaults = {
 
 // ---------------------------------------------------------------------------- helpers
 
+/** run --dry-run: decide on the real state, change nothing (see the top) */
+const shadow = Deno.args[0] == "run" && Deno.args.includes("--dry-run")
 const nowS = () => performance.now() / 1000
 const sleep = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000))
 const log = (...parts) => console.log(new Date().toISOString(), ...parts)
@@ -58,6 +66,26 @@ async function run(argv, { timeoutSeconds = 30 } = {}) {
     } catch (error) {
         return { code: -1, out: String(error) }
     }
+}
+
+/** A command that changes something (the radio, a connection): in a shadow run only logged, and taken as done. */
+async function change(argv, options) {
+    if (shadow) {
+        log(`WOULD run: ${argv.join(" ")}`)
+        return { code: 0, out: "" }
+    }
+    return await run(argv, options)
+}
+
+/** A shadow run logs every input when it changes, so each decision can be read against what it saw. */
+const lastInputs = new Map()
+function noteInput(name, value) {
+    const text = JSON.stringify(value)
+    if (shadow && lastInputs.get(name) != text) {
+        lastInputs.set(name, text)
+        log(`input ${name}: ${text}`)
+    }
+    return value
 }
 
 // ---------------------------------------------------------------------------- config
@@ -87,8 +115,12 @@ function readConfig() {
 
 /** Writes the config (temp file + rename); every failure is logged and swallowed. */
 function writeConfig(config) {
+    if (shadow) {
+        log(`WOULD save config (saved mode ${config.savedMode})`)
+        return true
+    }
     try {
-        Deno.mkdirSync(import.meta.dirname, { recursive: true })
+        Deno.mkdirSync(configDir, { recursive: true })
         const temp = `${configPath}.tmp`
         Deno.writeTextFileSync(temp, JSON.stringify(config, null, 4) + "\n")
         Deno.renameSync(temp, configPath)
@@ -111,7 +143,7 @@ function saveMode(config, mode) {
 async function wlanState(config) {
     const { out } = await run(["nmcli", "-g", "GENERAL.STATE,GENERAL.CONNECTION", "device", "show", config.iface])
     const [state = "", connection = ""] = out.trim().split("\n")
-    return { connected: state.startsWith("100"), connection: connection.trim() }
+    return noteInput("wlan", { connected: state.startsWith("100"), connection: connection.trim() })
 }
 
 async function inAp(config) {
@@ -190,10 +222,14 @@ async function connectionsNow(config) {
     const inbound = rows
         .filter((row) => row.state == "01" && listening.has(row.localPort) && counted.has(row.local))
         .map((row) => row.peer)
-    return { stations, inbound: [...new Set(inbound)] }
+    return noteInput("connections", { stations, inbound: [...new Set(inbound)] })
 }
 
 async function online(config) {
+    return noteInput("online", await onlineNow(config))
+}
+
+async function onlineNow(config) {
     for (const peer of config.tailscalePingPeers) {
         const { code } = await run(["tailscale", "ping", "--c", "1", "--timeout", "5s", peer], { timeoutSeconds: 10 })
         if (code == 0) {
@@ -215,7 +251,7 @@ async function online(config) {
 // ---------------------------------------------------------------------------- mode changes
 
 async function startAp(config) {
-    const result = await run(config.apStartCommand, { timeoutSeconds: 60 })
+    const result = await change(config.apStartCommand, { timeoutSeconds: 60 })
     log(`ap_start exited ${result.code}`)
     for (let i = 0; i < 12; i++) {
         if (await inAp(config)) {
@@ -231,7 +267,7 @@ async function startAp(config) {
 /** Saved profiles in range, then open networks, strongest first; both bands; none in `bad`. */
 async function candidates(config, bad) {
     const listing = await run(
-        ["nmcli", "-t", "-e", "no", "-f", "SIGNAL,FREQ,SECURITY,SSID", "device", "wifi", "list", "ifname", config.iface, "--rescan", "yes"],
+        ["nmcli", "-t", "-e", "no", "-f", "SIGNAL,FREQ,SECURITY,SSID", "device", "wifi", "list", "ifname", config.iface, "--rescan", shadow ? "no" : "yes"],
         { timeoutSeconds: 40 },
     )
     const visible = listing.out.split("\n").map((line) => {
@@ -256,7 +292,10 @@ async function candidates(config, bad) {
         }
     }
     const open = config.allowOpenNetworks ? [...strongest.values()].filter((network) => network.open) : []
-    return [...saved.sort((a, b) => b.signal - a.signal), ...open].filter((network) => !bad.has(network.ssid))
+    return noteInput(
+        "candidates",
+        [...saved.sort((a, b) => b.signal - a.signal), ...open].filter((network) => !bad.has(network.ssid)),
+    )
 }
 
 async function join(config, network) {
@@ -264,7 +303,7 @@ async function join(config, network) {
     const argv = network.profile
         ? ["nmcli", "connection", "up", network.profile, "ifname", config.iface]
         : ["nmcli", "device", "wifi", "connect", network.ssid, "ifname", config.iface]
-    await run(argv, { timeoutSeconds: config.joinTimeoutSeconds })
+    await change(argv, { timeoutSeconds: config.joinTimeoutSeconds })
     const until = nowS() + config.joinHoldSeconds
     while (nowS() < until) {
         if (!(await inClient(config))) {
@@ -409,7 +448,7 @@ async function serve(config) {
                 }
             } else if (state == "Discovery") {
                 if (await inAp(config)) {
-                    await run(["nmcli", "connection", "down", config.apConnection])
+                    await change(["nmcli", "connection", "down", config.apConnection])
                 }
                 const found = nowS() < discoveryEnds ? await candidates(config, bad) : []
                 if (found.length == 0) {
@@ -421,7 +460,7 @@ async function serve(config) {
                 } else {
                     log(`${found[0].ssid} marked bad`)
                     bad.add(found[0].ssid)
-                    await run(["nmcli", "device", "disconnect", config.iface])
+                    await change(["nmcli", "device", "disconnect", config.iface])
                 }
             } else if (state == "Soft" || state == "Hard") {
                 let trouble = !(await inClient(config)) ? "link lost" : null
@@ -491,7 +530,7 @@ async function dryRun(config) {
 const command = Deno.args[0] ?? "status"
 const config = readConfig()
 if (command == "run") {
-    if (Deno.uid() != 0) {
+    if (Deno.uid() != 0 && !shadow && !Deno.env.get("NETWORK_SAFETY_TEST")) {
         console.error("run needs root (it changes wlan0); try: main.js status")
         Deno.exit(1)
     }
