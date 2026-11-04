@@ -1,0 +1,1383 @@
+html, body {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+}
+/* Every tappable control. iOS ignores unprefixed `user-select`, so a long
+   press on a d-pad arrow was selecting the glyph mid-drive. */
+.db, .act, .estop, .panels-btn, .dock, .dpad, .topbar, .card h3, .view-head, .sticks, .main-tools {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+.db, .act, .estop, .panels-btn {
+    touch-action: manipulation;
+}
+
+/* ── camera fills the whole stage; everything else floats over it ── */
+.stage {
+    position: fixed;
+    inset: 0;
+    background: var(--bg);
+}
+.main-view {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+/* letterbox around a live frame: black is the video's, not the theme's */
+.main-view.live {
+    background: #000;
+}
+/* Fill the stage rather than sitting at the stream's own 848x480 in the middle
+   of it — max-* alone caps the image but never grows it. contain keeps the
+   whole frame visible, which matters when you are driving off it. */
+.main-view canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+.main-view .cam-canvas {
+    object-fit: contain;
+}
+/* the 3D view needs no letterbox, nor the vignette */
+.main-view.map {
+    background: var(--bg);
+}
+.cam-ph {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    color: var(--muted-fg);
+    font-size: 13px;
+    text-align: center;
+    padding: 24px;
+}
+.main-view.live .cam-ph {
+    display: none;
+}
+.cam-ph .glyph {
+    font-size: 46px;
+    line-height: 1;
+    opacity: 0.4;
+}
+.cam-ph .ph-connect {
+    pointer-events: auto;
+}
+/* multi-line explainer (off-robot / no-nix guidance) */
+.cam-ph .note-block {
+    max-width: 560px;
+    text-align: left;
+    line-height: 1.6;
+    font-size: 13px;
+    color: var(--fg);
+}
+.cam-ph .note-block p {
+    margin: 0 0 10px;
+}
+.cam-ph .note-block code {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--code-fg);
+    background: var(--code-bg);
+    border-radius: var(--radius-sm);
+    padding: 1px 5px;
+}
+
+/* subtle vignette so overlays stay readable over a bright frame (only over video) */
+.vignette {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    z-index: 1;
+    background:
+        linear-gradient(
+            to bottom,
+            color-mix(in srgb, var(--bg) 55%, transparent),
+            transparent 22%,
+            transparent 72%,
+            color-mix(in srgb, var(--bg) 60%, transparent)
+        ),
+        linear-gradient(
+        to right,
+        color-mix(in srgb, var(--bg) 35%, transparent),
+        transparent 16%,
+        transparent 84%,
+        color-mix(in srgb, var(--bg) 35%, transparent)
+    );
+}
+.main-view:not(.live) + .vignette, .main-view.map + .vignette {
+    display: none;
+}
+
+/* ── top bar ── */
+.topbar {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: calc(12px + var(--dim-inset-top)) calc(14px + var(--dim-inset-right)) 12px
+        calc(14px + var(--dim-inset-left));
+    pointer-events: none;
+}
+.topbar > * {
+    pointer-events: auto;
+}
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+}
+.brand .mark {
+    width: 26px;
+    height: 26px;
+    color: var(--primary);
+}
+.brand .name {
+    text-shadow: 0 1px 4px var(--bg);
+}
+.spacer {
+    flex: 1;
+}
+
+/* status badges (.dim-badge): only the attention pulse is app-local */
+.pill.danger .dot, .pill.warn .dot {
+    animation: pulse 1s ease-in-out infinite;
+}
+
+/* per-subsystem dots (unitree / lidar / camera) in one badge */
+.subs {
+    gap: 10px;
+}
+.subs .s {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+.subs .s .dot {
+    background: var(--muted-fg);
+}
+.subs .s.up .dot {
+    background: var(--ok);
+}
+.subs .s.down .dot {
+    background: var(--danger);
+}
+/* lidar/camera chips double as connect/release toggles */
+.subs .s.click {
+    cursor: pointer;
+}
+.subs .s.click:hover {
+    color: var(--fg);
+    text-decoration: underline;
+}
+
+.mode {
+    cursor: pointer;
+}
+.mode:hover {
+    border-color: color-mix(in oklch, var(--border) 50%, var(--primary));
+}
+.mode.copied {
+    color: var(--primary-fg);
+    background: var(--primary);
+    border-color: var(--primary);
+}
+.mode.walking {
+    color: var(--primary);
+    background: var(--primary-soft);
+    border-color: color-mix(in srgb, var(--primary) 45%, transparent);
+}
+/* the robot stopped reporting — the text is history, not state */
+.mode.stale {
+    color: color-mix(in oklch, var(--warn) 74%, var(--fg));
+    border-color: color-mix(in srgb, var(--warn) 55%, transparent);
+    background: color-mix(in oklch, var(--warn) 22%, var(--card));
+}
+/* collapse / limp — the robot is not holding itself up */
+.mode.damp {
+    color: color-mix(in oklch, var(--danger) 80%, var(--fg));
+    border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+    background: color-mix(in oklch, var(--danger) 16%, var(--card));
+}
+
+.estop {
+    padding: 8px 15px;
+}
+
+/* ── left column: telemetry rail above the lidar card ──
+   One flex column owns the vertical space so the two can never overlap:
+   the lidar card keeps its height and the rail takes what's left (scrolling
+   if the viewport is short). */
+.left-col {
+    position: absolute;
+    left: calc(14px + var(--dim-inset-left));
+    top: calc(64px + var(--dim-inset-top));
+    bottom: calc(14px + var(--dim-inset-bottom));
+    z-index: 8;
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.rail {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+/* .card = .dim-panel.glass; only spacing is app-local */
+.card {
+    padding: 12px 13px;
+}
+/* headers are the collapse control for their card */
+.card h3 {
+    margin: 0 0 9px;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.card h3:hover {
+    color: var(--fg);
+}
+.card h3 .chev {
+    display: inline-flex;
+    font-size: 10px;
+    transition: transform 0.14s;
+}
+.card.collapsed h3 .chev {
+    transform: rotate(-90deg);
+}
+.card.collapsed h3 {
+    margin-bottom: 0;
+}
+/* hide everything but the header (the lidar/pose heads hold their own header) */
+.card.collapsed > *:not(h3):not(.view-head) {
+    display: none;
+}
+
+/* ── speed sliders (.dim-range) ── */
+.speed {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.speed label {
+    font-size: 11px;
+    color: var(--muted-fg);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 8px;
+}
+.speed label .v {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--fg);
+}
+.speed input[type="range"] {
+    margin: 8px 0 11px;
+    touch-action: pan-y;
+}
+.speed-foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    font-size: 10px;
+    color: var(--muted-fg);
+}
+.speed-foot button {
+    appearance: none;
+    font: inherit;
+    color: var(--muted-fg);
+    cursor: pointer;
+    background: none;
+    border: 0;
+    padding: 0;
+    text-decoration: underline;
+}
+.speed-foot button:hover {
+    color: var(--fg);
+}
+/* a non-default speed should be obvious before you press forward */
+.speed.tuned label .v {
+    color: var(--warn);
+}
+
+.kv {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 3px 8px;
+    font-size: 12px;
+}
+.kv .k {
+    color: var(--muted-fg);
+}
+.kv .v {
+    font-family: var(--mono);
+    color: var(--fg);
+    text-align: right;
+}
+.kv .v.hot {
+    color: var(--danger);
+}
+.kv .v.near {
+    color: var(--warn);
+}
+
+/* attitude horizon (roll/pitch): sky in the accent, ground in the secondary ink */
+.horizon {
+    position: relative;
+    height: 84px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: color-mix(in srgb, var(--primary) 12%, var(--bg));
+    border: 1px solid var(--border);
+}
+.horizon .sky {
+    position: absolute;
+    inset: -40% -40%;
+    background: linear-gradient(
+        color-mix(in srgb, var(--primary) 30%, var(--bg)) 49.6%,
+        color-mix(in srgb, var(--muted-fg) 30%, var(--bg)) 50.4%
+    );
+    transform-origin: center;
+}
+.horizon .cross {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 46px;
+    height: 1px;
+    background: var(--primary);
+    transform: translate(-50%, -50%);
+    box-shadow: 0 0 6px var(--primary);
+}
+.horizon .cross::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 1px;
+    height: 14px;
+    background: var(--primary);
+    transform: translate(-50%, -50%);
+}
+.horizon .yaw {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 3px;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--fg);
+    text-shadow: 0 1px 2px var(--bg);
+}
+
+/* ── the other view (3D or a camera), under the rail ── */
+.view-card {
+    flex: 0 0 210px;
+    padding: 0;
+    overflow: hidden;
+    position: relative;
+}
+.view-card.big {
+    flex: 0 0 min(60vh, 520px);
+    width: min(56vw, 720px);
+}
+.view-card.collapsed, .view-card.big.collapsed {
+    flex: 0 0 auto;
+    width: 280px;
+}
+.view-card.collapsed .view-head {
+    position: static;
+    background: none;
+}
+.view-card.collapsed canvas {
+    display: none !important;
+}
+.view-card canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: #000;
+}
+.view-card .map-canvas {
+    background: var(--bg);
+}
+.view-head {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px 6px 10px;
+    background: linear-gradient(to bottom, color-mix(in srgb, var(--card) 85%, transparent), transparent);
+    pointer-events: none;
+}
+.view-head > * {
+    pointer-events: auto;
+}
+.view-head h3 {
+    margin: 0;
+    white-space: nowrap;
+}
+.view-head .m, .map-tools .m {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--muted-fg);
+    pointer-events: none;
+}
+.view-head .m {
+    margin-left: auto;
+}
+.view-head .seg {
+    margin-left: auto;
+}
+.view-head .expand {
+    padding: 5px 7px;
+}
+.view-head .dim-btn.sm {
+    padding: 3px 7px;
+    font-size: 11px;
+}
+
+/* ── command dock (bottom center) ── */
+.dock {
+    position: absolute;
+    left: calc(308px + var(--dim-inset-left));
+    right: calc(196px + var(--dim-inset-right));
+    bottom: calc(16px + var(--dim-inset-bottom));
+    z-index: 9;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 6px;
+    pointer-events: none;
+}
+.dock > * {
+    pointer-events: auto;
+}
+/* .act = .dim-btn; the variants below are this app's safety tiers */
+.act {
+    white-space: nowrap;
+    flex: 0 0 auto;
+    padding: 10px 14px;
+}
+.act.good {
+    color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+}
+/* the two modes that drop the robot — same red as their confirm dialog */
+.act.bad {
+    color: color-mix(in oklch, var(--danger) 80%, var(--fg));
+    border-color: color-mix(in srgb, var(--danger) 60%, transparent);
+    background: color-mix(in oklch, var(--danger) 12%, var(--card));
+}
+.act.bad:hover {
+    border-color: var(--danger);
+    background: color-mix(in oklch, var(--danger) 22%, var(--card));
+}
+/* one-click but consequential — takes a device off another service */
+.act.warn {
+    color: color-mix(in oklch, var(--warn) 74%, var(--fg));
+    border-color: color-mix(in srgb, var(--warn) 62%, transparent);
+    background: color-mix(in oklch, var(--warn) 14%, var(--card));
+}
+.act.warn:hover {
+    border-color: var(--warn);
+    background: color-mix(in oklch, var(--warn) 24%, var(--card));
+}
+/* the mode the robot is currently in (.dim-btn.on; .dim-btn in the selector to outrank the Portal's button fill) */
+.dim-btn.act.bad.on {
+    color: var(--danger-fg);
+    background: var(--danger);
+    border-color: var(--danger);
+}
+
+/* ── drive pad (bottom right) ──
+   Laid out like the keys themselves: Q W E over A S D, so the on-screen pad
+   and the keyboard are the same shape. Releasing stops the robot, so there's
+   no stop button here — E-STOP (Space) covers emergencies. */
+.dpad {
+    position: absolute;
+    right: calc(16px + var(--dim-inset-right));
+    bottom: calc(16px + var(--dim-inset-bottom));
+    z-index: 9;
+    display: grid;
+    grid-template-columns: repeat(3, 46px);
+    grid-template-rows: repeat(2, 46px);
+    gap: 6px;
+}
+.dpad .db {
+    user-select: none;
+    touch-action: none;
+    font-size: 16px;
+    padding: 0;
+}
+body.science .dim-btn.db.held {
+    color: var(--primary-fg);
+    background: var(--primary);
+    border-color: var(--primary);
+}
+/* driving needs a walking mode — dimmed, but still clickable so the toast explains */
+.db.blocked {
+    opacity: 0.35;
+}
+.db.sl {
+    grid-area: 1 / 1;
+}
+.db.fwd {
+    grid-area: 1 / 2;
+}
+.db.sr {
+    grid-area: 1 / 3;
+}
+.db.tl {
+    grid-area: 2 / 1;
+}
+.db.back {
+    grid-area: 2 / 2;
+}
+.db.tr {
+    grid-area: 2 / 3;
+}
+
+.vel {
+    position: absolute;
+    right: calc(16px + var(--dim-inset-right));
+    bottom: calc(116px + var(--dim-inset-bottom));
+    z-index: 9;
+    font-size: 10.5px;
+    padding: 6px 9px;
+    min-width: 128px;
+}
+.vel.on {
+    border-color: color-mix(in srgb, var(--primary) 60%, transparent);
+}
+.vel .row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+/* Hidden on desktop, where the panels are always on screen. */
+.topbar .panels-btn {
+    display: none;
+    padding: 7px 9px;
+    font-size: 17px;
+}
+.scrim {
+    display: none;
+    position: absolute;
+    inset: 0;
+    z-index: 7;
+    background: color-mix(in srgb, var(--bg) 60%, transparent);
+}
+.scrim.open {
+    display: block;
+}
+
+/* transient toast (.dim-toast): above the command dock (--dock-h, measured: it wraps) */
+.toast-stack {
+    bottom: calc(var(--dock-h, 56px) + 28px + var(--dim-inset-bottom));
+    z-index: 20;
+}
+.toast {
+    max-width: min(440px, 88vw);
+    text-align: center;
+}
+.toast:not(.show) {
+    display: none;
+}
+
+@keyframes pulse {
+    0%, 100% {
+        opacity: 0.35;
+    }
+    50% {
+        opacity: 1;
+    }
+}
+
+/* ── danger confirmation modal ──
+   Dangerous commands (damp / zero-torque = the robot goes limp and FALLS if
+   standing; stand/basic = the robot takes torque control and self-balances)
+   never fire on a single tap — they raise this full-screen confirm. The damp
+   variant is deliberately screaming red. E-STOP stays instant: a panic
+   button must never grow a dialog. */
+.confirm {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    background: color-mix(in srgb, var(--bg) 72%, transparent);
+    backdrop-filter: blur(6px);
+}
+.confirm.show {
+    display: flex;
+}
+.confirm-box {
+    --tier: var(--danger);
+    width: min(460px, 88vw);
+    border-radius: var(--radius-lg);
+    padding: 26px 26px 22px;
+    text-align: center;
+    color: var(--fg);
+    border: 2px solid var(--tier);
+    background: linear-gradient(
+        160deg,
+        color-mix(in oklch, var(--tier) 26%, var(--card)),
+        color-mix(in oklch, var(--tier) 10%, var(--card))
+    );
+}
+.confirm.amber .confirm-box {
+    --tier: var(--warn);
+}
+.confirm .glyph {
+    font-size: 44px;
+    line-height: 1;
+    display: inline-flex;
+    color: var(--tier);
+}
+.confirm h2 {
+    margin: 10px 0 8px;
+    color: color-mix(in oklch, var(--tier) 75%, var(--fg));
+}
+.confirm p {
+    margin: 0 0 20px;
+    font-size: 13.5px;
+    line-height: 1.5;
+    color: var(--fg);
+}
+.confirm-actions {
+    display: flex;
+    gap: 12px;
+    justify-content: center;
+}
+.confirm-actions button {
+    padding: 12px 22px;
+}
+.confirm.amber #confirm-go {
+    color: var(--primary-fg);
+    background: var(--warn);
+    border-color: var(--warn);
+}
+.confirm.amber #confirm-go:hover {
+    background: color-mix(in oklch, var(--warn) 88%, black);
+}
+
+/* red tier: damp / zero-torque — the robot collapses */
+.confirm.red .confirm-box {
+    animation: danger-throb 1s ease-in-out infinite;
+}
+.confirm.red .glyph, .confirm.red h2 {
+    text-shadow: 0 0 18px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+.confirm.red #confirm-go {
+    box-shadow: 0 0 22px color-mix(in srgb, var(--danger) 70%, transparent);
+}
+@keyframes danger-throb {
+    0%, 100% {
+        box-shadow:
+            0 0 0 3px color-mix(in srgb, var(--danger) 35%, transparent),
+            0 0 60px 8px color-mix(in srgb, var(--danger) 50%, transparent);
+    }
+    50% {
+        box-shadow:
+            0 0 0 6px color-mix(in srgb, var(--danger) 65%, transparent),
+            0 0 90px 18px color-mix(in srgb, var(--danger) 75%, transparent);
+    }
+}
+/* amber tier: stand / basic — the robot takes torque control and balances */
+.confirm.amber .confirm-box {
+    box-shadow: 0 0 50px 6px color-mix(in srgb, var(--warn) 40%, transparent);
+}
+
+/* ── "/" action search palette (.dim-panel.glass) ── */
+.palette {
+    position: absolute;
+    left: 50%;
+    bottom: calc(var(--dock-h, 56px) + 22px + var(--dim-inset-bottom));
+    transform: translateX(-50%);
+    z-index: 25;
+    display: none;
+    flex-direction: column;
+    width: min(380px, 90vw);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+}
+.palette.show {
+    display: flex;
+}
+.palette input {
+    appearance: none;
+    border: none;
+    outline: none;
+    background: transparent;
+    color: var(--fg);
+    font: inherit;
+    font-size: 13px;
+    padding: 11px 13px;
+    border-bottom: 1px solid var(--border);
+}
+.palette input::placeholder {
+    color: var(--muted-fg);
+}
+.palette-list {
+    max-height: 260px;
+    overflow-y: auto;
+    padding: 5px;
+    scrollbar-width: thin;
+}
+.palette-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 9px;
+    border-radius: var(--radius);
+    font-size: 12.5px;
+    color: var(--fg);
+    cursor: pointer;
+}
+.palette-item:hover {
+    background: var(--accent);
+}
+.palette-item .hint {
+    margin-left: auto;
+}
+.palette-item.sel {
+    background: var(--primary-soft);
+}
+.palette-item.red-danger .hint {
+    color: var(--danger);
+}
+.palette-item.amber-danger .hint {
+    color: color-mix(in oklch, var(--warn) 74%, var(--fg));
+}
+/* blocked: needs a mode the robot isn't in — the hint says which */
+.palette-item.blocked {
+    opacity: 0.45;
+}
+.palette-item.blocked .hint {
+    text-transform: none;
+    letter-spacing: 0;
+}
+.palette-empty {
+    padding: 10px 12px;
+    font-size: 12px;
+    color: var(--muted-fg);
+}
+.palette-foot {
+    padding: 7px 12px;
+    font-size: 10px;
+    letter-spacing: 0.03em;
+    color: var(--muted-fg);
+    border-top: 1px solid var(--border);
+}
+/* ── phone ──────────────────────────────────────────────────────────────────
+   A phone has no hover and no keyboard, so the two things you cannot do
+   without — drive and the commands — get the permanent screen space, and the
+   read-only telemetry moves into a drawer. The dock goes to the TOP because
+   the bottom-right corner is where the thumb lives, and that belongs to the
+   d-pad. */
+@media (max-width: 820px) {
+    /* dvh shrinks when the URL bar is showing; vh does not. */
+    .stage {
+        bottom: auto;
+        height: 100dvh;
+    }
+    /* one source of truth for the pad, so vel and toast stack off it */
+    :root {
+        --dpad-cell: 62px;
+        --dpad-gap: 8px;
+        --dpad-bottom: calc(16px + env(safe-area-inset-bottom) + var(--dim-inset-bottom));
+        --dpad-h: calc(var(--dpad-cell) * 2 + var(--dpad-gap));
+    }
+    .topbar {
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: calc(8px + env(safe-area-inset-top)) calc(10px + env(safe-area-inset-right)) 8px
+            calc(10px + env(safe-area-inset-left));
+    }
+    .topbar .panels-btn {
+        display: inline-flex;
+    }
+    .brand .wordmark {
+        display: none;
+    }
+    .subs {
+        display: none;
+    }
+
+    /* commands across the top, under the bar, scrolling sideways */
+    .dock {
+        left: 0;
+        right: 0;
+        top: calc(var(--topbar-h, 52px) + 4px);
+        bottom: auto;
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+        justify-content: flex-start;
+        justify-content: safe center;
+        padding: 6px 10px;
+        gap: 7px;
+        -webkit-mask-image: linear-gradient(to right, transparent, black 12px, black calc(100% - 12px), transparent);
+        mask-image: linear-gradient(to right, transparent, black 12px, black calc(100% - 12px), transparent);
+    }
+
+    /* telemetry becomes a drawer — off-canvas until the panels button */
+    .left-col {
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: min(80vw, 300px);
+        z-index: 12;
+        padding: calc(var(--topbar-h, 52px) + 8px) 10px 10px;
+        background: color-mix(in srgb, var(--bg) 92%, transparent);
+        backdrop-filter: blur(10px);
+        border-right: 1px solid var(--border);
+        transform: translateX(-102%);
+        transition: transform 0.18s ease;
+    }
+    .left-col.open {
+        transform: translateX(0);
+    }
+    .view-card {
+        flex: 0 0 240px;
+    }
+    .view-card.big {
+        width: auto;
+    }
+
+    /* Drive pad centred on the bottom edge: reachable with either thumb, and
+       clear of the browser chrome now that the stage is dvh-tall. */
+    .dpad {
+        left: 50%;
+        right: auto;
+        transform: translateX(-50%);
+        bottom: var(--dpad-bottom);
+        grid-template-columns: repeat(3, var(--dpad-cell));
+        grid-template-rows: repeat(2, var(--dpad-cell));
+        gap: var(--dpad-gap);
+    }
+    .dpad .db {
+        font-size: 21px;
+    }
+    .vel {
+        left: 50%;
+        right: auto;
+        transform: translateX(-50%);
+        font-size: 11px;
+        min-width: 112px;
+        bottom: calc(var(--dpad-bottom) + var(--dpad-h) + 8px);
+    }
+    .toast-stack {
+        bottom: calc(var(--dpad-bottom) + var(--dpad-h) + 56px);
+    }
+    .palette-foot {
+        display: none;
+    }
+}
+/* Short landscape phone: the d-pad still has to fit under the dock. */
+@media (max-width: 820px) and (max-height: 460px) {
+    :root {
+        --dpad-cell: 50px;
+    }
+    .vel {
+        display: none;
+    }
+    .toast-stack {
+        bottom: calc(var(--dpad-bottom) + var(--dpad-h) + 12px);
+    }
+}
+
+/* Portal: the slider track and progress wells need to show on the near-black cards */
+body.science.dark .dim-range,
+body.science.dark .dim-progress {
+    background: var(--line);
+}
+
+/* ── M20 Ctrl's own ── */
+.card h3 .meta {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--muted-fg);
+}
+.muted {
+    color: var(--muted-fg);
+}
+.note {
+    font-size: 11.5px;
+    line-height: 1.45;
+    color: var(--muted-fg);
+    margin-top: 8px;
+}
+.note.error {
+    color: var(--danger);
+}
+.banner {
+    position: absolute;
+    top: calc(var(--topbar-h, 58px) + var(--dim-inset-top));
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 11;
+    max-width: min(640px, 92vw);
+    padding: 5px 12px;
+    border-radius: var(--radius);
+    font-size: 12px;
+    text-align: center;
+    border: 1px solid color-mix(in srgb, var(--warn) 55%, transparent);
+    background: color-mix(in oklch, var(--warn) 18%, var(--card));
+    color: var(--fg);
+}
+.banner.danger {
+    border-color: color-mix(in srgb, var(--danger) 60%, transparent);
+    background: color-mix(in oklch, var(--danger) 18%, var(--card));
+}
+
+/* a two-way switch (front / rear, blueprint / direct) */
+.seg {
+    display: inline-flex;
+}
+.seg .dim-btn {
+    border-radius: 0;
+}
+.seg .dim-btn:first-child {
+    border-radius: var(--radius) 0 0 var(--radius);
+}
+.seg .dim-btn:last-child {
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin-left: -1px;
+}
+/* on: the theme's pressed look (.dim-btn[aria-pressed]) */
+body.science .seg .dim-btn.on, body.science .dim-btn.sm.on {
+    color: var(--primary);
+    background: var(--sel);
+    border-color: var(--primary);
+    position: relative;
+}
+.mode-switch {
+    margin-bottom: 10px;
+}
+
+/* boards: one compact row each */
+.boards {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.board.stale {
+    opacity: 0.6;
+}
+.board-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+}
+.board-name {
+    font-weight: 600;
+    font-size: 12.5px;
+    min-width: 44px;
+}
+.lights {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 8px;
+    font-size: 10px;
+    color: var(--muted-fg);
+}
+.light {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+}
+.light .dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--muted-fg);
+    opacity: 0.6;
+}
+.light.ok .dot {
+    background: var(--ok);
+    opacity: 1;
+}
+.light.warn .dot {
+    background: var(--warn);
+    opacity: 1;
+}
+.light.bad .dot {
+    background: var(--danger);
+    opacity: 1;
+}
+.board-body {
+    display: grid;
+    grid-template-columns: 48px 1fr auto;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+}
+.cpu-big {
+    font-size: 17px;
+    line-height: 1;
+    display: flex;
+    flex-direction: column;
+}
+.cpu-big small {
+    font-size: 9px;
+    color: var(--muted-fg);
+    margin-top: 2px;
+}
+.board-body canvas {
+    width: 100%;
+    height: 34px;
+    border-bottom: 1px solid var(--border);
+}
+.board-nums {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: 10.5px;
+    color: var(--muted-fg);
+}
+.board-nums .warm {
+    color: var(--warn);
+}
+.board-nums .hot {
+    color: var(--danger);
+}
+.board-more {
+    margin-top: 6px;
+    font-size: 11px;
+}
+.board-more .v {
+    overflow-wrap: anywhere;
+}
+.cores {
+    display: flex;
+    gap: 2px;
+    justify-content: flex-end;
+    height: 16px;
+    align-items: flex-end;
+}
+.core {
+    width: 6px;
+    height: 100%;
+    display: flex;
+    align-items: flex-end;
+    background: var(--line, var(--border));
+}
+.core span {
+    width: 100%;
+    background: var(--primary);
+}
+.core.hot span {
+    background: var(--warn);
+}
+
+/* streams */
+.streams {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin-top: 6px;
+    max-height: 260px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    font-size: 11px;
+}
+.stream {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    gap: 2px 6px;
+    align-items: center;
+}
+.stream .val {
+    grid-column: 2 / 4;
+    font-size: 10px;
+    color: var(--muted-fg);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* settings */
+.settings {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 11.5px;
+}
+.settings label {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--muted-fg);
+}
+.settings textarea {
+    font-size: 10.5px;
+    resize: vertical;
+}
+.settings .row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.speed-foot .dry {
+    display: inline-flex;
+    gap: 4px;
+    align-items: center;
+}
+
+/* record */
+.rec-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+.rec-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--danger);
+}
+body.science .dim-btn.rec-btn.on {
+    color: var(--danger-fg);
+    background: var(--danger);
+    border-color: var(--danger);
+}
+.rec-btn.on .rec-dot {
+    background: var(--danger-fg);
+    border-radius: 1px;
+}
+
+/* over the main view, top right under the bar: front / rear (or the 3D tools) and the camera / 3D swap */
+.main-tools {
+    position: absolute;
+    top: calc(var(--topbar-h, 58px) + 8px);
+    right: calc(16px + var(--dim-inset-right));
+    z-index: 9;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+.map-tools {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    padding: 4px 6px 4px 10px;
+}
+.view-swap {
+    display: inline-flex;
+    gap: 6px;
+    align-items: center;
+}
+.vel .row.muted {
+    color: var(--muted-fg);
+    border-top: 1px solid var(--border);
+    margin-top: 3px;
+    padding-top: 3px;
+}
+
+/* the phone's thumb sticks (hidden on a desktop, where the d-pad is) */
+.sticks {
+    display: none;
+}
+.stick-zone {
+    flex: 1 1 0;
+    height: 100%;
+}
+.dr-thumbstick {
+    position: relative;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+    min-width: 0;
+    --dr-stick: clamp(104px, min(30vw, 24vh), 150px);
+}
+.dr-thumbstick-base {
+    position: absolute;
+    left: 50%;
+    top: 55%;
+    width: var(--dr-stick);
+    height: var(--dr-stick);
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+    border: 1px solid color-mix(in srgb, var(--fg) 40%, transparent);
+    background: radial-gradient(
+        circle,
+        color-mix(in srgb, var(--card) 35%, transparent),
+        color-mix(in srgb, var(--card) 70%, transparent)
+    );
+    transition: left 0.12s ease, top 0.12s ease;
+    pointer-events: none;
+}
+.dr-thumbstick--active .dr-thumbstick-base {
+    border-color: var(--fg);
+    transition: none;
+}
+.dr-thumbstick-knob {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 44%;
+    height: 44%;
+    margin: -22% 0 0 -22%;
+    border-radius: 50%;
+    pointer-events: none;
+    background: color-mix(in srgb, var(--fg) 30%, transparent);
+    border: 1px solid color-mix(in srgb, var(--fg) 50%, transparent);
+}
+.dr-thumbstick--active .dr-thumbstick-knob {
+    background: var(--primary);
+    border-color: var(--fg);
+}
+.dr-thumbstick-guide {
+    position: absolute;
+    inset: 18%;
+    pointer-events: none;
+    opacity: 0.35;
+}
+.dr-thumbstick-guide::before, .dr-thumbstick-guide::after {
+    content: "";
+    position: absolute;
+    background: var(--fg);
+}
+.dr-thumbstick-guide--xy::before, .dr-thumbstick-guide--y::before {
+    left: 50%;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+}
+.dr-thumbstick-guide--xy::after, .dr-thumbstick-guide--x::after {
+    top: 50%;
+    left: 0;
+    right: 0;
+    height: 1px;
+}
+.dr-thumbstick-label {
+    position: absolute;
+    left: -20px;
+    right: -20px;
+    bottom: calc(100% + 6px);
+    text-align: center;
+    font: 600 10px var(--sans);
+    color: var(--fg);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    opacity: 0.8;
+}
+/* a stick's travel is a circle: its ring and knob stay round in a square skin (as in the Controller) */
+html[data-dim-square] body.science .dr-thumbstick-base, html[data-dim-square] body.science .dr-thumbstick-knob {
+    border-radius: 50% !important;
+}
+.stick-middle {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 10px;
+}
+.stick-stop {
+    width: 76px;
+    height: 76px;
+    border-radius: 50%;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    touch-action: none;
+}
+.cam-flip {
+    display: inline-flex;
+    gap: 5px;
+    align-items: center;
+    touch-action: manipulation;
+}
+
+@media (max-width: 820px) {
+    .hide-phone {
+        display: none !important;
+    }
+    .dpad {
+        display: none;
+    }
+    .sticks {
+        display: flex;
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: calc(env(safe-area-inset-bottom) + var(--dim-inset-bottom));
+        height: min(38dvh, 260px);
+        z-index: 9;
+        padding: 0 6px 6px;
+    }
+    .vel {
+        bottom: calc(min(38dvh, 260px) + 8px + var(--dim-inset-bottom));
+    }
+    .toast-stack {
+        bottom: calc(min(38dvh, 260px) + 60px + var(--dim-inset-bottom));
+    }
+    .main-tools {
+        top: calc(var(--topbar-h, 52px) + 52px);
+        right: 10px;
+    }
+    .main-tools .map-tools .m {
+        display: none;
+    }
+    .estop {
+        padding: 7px 12px;
+    }
+    /* the bar's "Simulated" says it on a phone; a backend error still shows */
+    .banner.warn {
+        display: none;
+    }
+    .banner {
+        top: calc(var(--topbar-h, 52px) + 96px);
+        font-size: 11px;
+    }
+    .brand .name {
+        display: none;
+    }
+}
+@media (max-width: 820px) and (max-height: 460px) {
+    .sticks {
+        height: 62dvh;
+    }
+    .vel {
+        display: none;
+    }
+}

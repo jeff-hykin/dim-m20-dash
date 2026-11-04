@@ -1,5 +1,5 @@
 {
-    description = "dim-m20-dash: M20 Ctrl, a dimOS Desktop app for the Deep Robotics Lynx M20 — `nix build .#dimosApp` → bin/dimos-app-server (Deno backend + a plain-JS page, no build step)";
+    description = "dim-m20-dash: M20 Ctrl, a dimOS Desktop app for the Deep Robotics Lynx M20 — `nix build .#dimosApp` → bin/dimos-app-server (Deno backend + the React page, built into frontend/dist and committed: nothing to build on a robot)";
     inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
     outputs = { self, nixpkgs }:
         let
@@ -8,7 +8,7 @@
         in {
             packages = forAll (pkgs:
                 let
-                    # the server: deno on the backend, the page served as is; ssh from nixpkgs so a robot without one works
+                    # the server: deno on the backend, the page as built (frontend/dist); ssh from nixpkgs so a robot without one works
                     serverFor = target:
                         let p = nixpkgs.legacyPackages.${target}; in
                         pkgs.writeTextFile {
@@ -19,7 +19,7 @@
                                 #!${p.runtimeShell}
                                 export PATH="$PATH:${p.openssh}/bin"
                                 export DENO_NO_UPDATE_CHECK=1 DENO_NO_PROMPT=1
-                                exec ${p.deno}/bin/deno run -A --no-lock --no-config ${./backend}/main.ts --frontend ${./frontend} "$@"
+                                exec ${p.deno}/bin/deno run -A --no-lock --no-config ${./backend}/main.ts --frontend ${./frontend/dist} "$@"
                             '';
                         };
                 in rec {

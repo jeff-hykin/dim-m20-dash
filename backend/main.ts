@@ -1,5 +1,6 @@
 // dimos-app-server: this app's API and its page on the unix socket Desktop gives (DIMOS_APP's `socket`, the one
-// interface: docs/apps.md), else port 8788 (M20_DASH_PORT) for a standalone run. `--frontend` is the nix wrapper's.
+// interface: docs/apps.md), else port 8788 (M20_DASH_PORT) for a standalone run. `--frontend` is the nix wrapper's (the built page,
+// frontend/dist, committed so no robot has to build it).
 import { applySettings } from "./app.ts"
 import { initLog } from "./applog.ts"
 import { dimosApp, loadRecordingsRoot } from "./dimos_app.ts"
@@ -13,7 +14,7 @@ function flag(name: string): string | undefined {
     return index === -1 ? undefined : Deno.args[index + 1]
 }
 
-const frontend = flag("frontend") ?? new URL("../frontend", import.meta.url).pathname
+const frontend = flag("frontend") ?? new URL("../frontend/dist", import.meta.url).pathname
 const types: Record<string, string> = {
     html: "text/html; charset=utf-8",
     js: "text/javascript",
@@ -21,6 +22,7 @@ const types: Record<string, string> = {
     svg: "image/svg+xml",
     png: "image/png",
     json: "application/json",
+    woff2: "font/woff2",
 }
 
 async function file(path: string): Promise<Response> {

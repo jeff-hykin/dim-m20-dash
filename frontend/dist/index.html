@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <!-- dim-app first-paint (dim-app vendor.js keeps this block current): Desktop's theme (/theme.css, every skin's tokens)
+             and its saved skin and corners before any CSS or JS loads, so the app's first frame is already in Desktop's look;
+             off Desktop, the bundled Portal page color. -->
+        <style>
+            html {
+                background: var(--bg, #05070d);
+                color-scheme: dark;
+            }
+        </style>
+        <script>
+            if (location.pathname.startsWith("/apps/")) {
+                try {
+                    const root = document.documentElement
+                    root.dataset.skin = localStorage.getItem("portal.theme") || "portal"
+                    const corners = localStorage.getItem("portal.corners")
+                    if (corners === "sharp" || corners === "rounded") {
+                        root.dataset.corners = corners
+                    }
+                } catch {
+                    // storage unavailable: Portal
+                }
+                document.write('<link rel="stylesheet" href="/theme.css" data-dim-desktop-theme>')
+            }
+        </script>
+        <!-- /dim-app first-paint -->
+        <meta name="color-scheme" content="light dark" />
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+        <title>M20 Ctrl · DimOS</title>
+      <script type="module" crossorigin src="./assets/index-DIiGpWik.js"></script>
+      <link rel="stylesheet" crossorigin href="./assets/index-CukLCNJ2.css">
+    </head>
+    <body class="science">
+        <div id="root"></div>
+    </body>
+</html>

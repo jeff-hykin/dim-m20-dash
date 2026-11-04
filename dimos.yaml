@@ -1,6 +1,6 @@
 title: M20 Ctrl
 spec-version: v1.6
-version: 0.1.0
+version: 0.2.0
 uses:
   '@dimos-gateway':
     - GET history/recordings
@@ -9,6 +9,8 @@ uses:
     - 'GET active/streams/{name}/peek'
     - GET active/modules
     - 'POST active/modules/{id}/rpcs/{name}'
+    # the page decodes the live topics and encodes the drive Twist with the gateway's message codecs
+    - GET msgs.js
   '@desktop-gateway':
     env:
       DIMOS_APP.socket: the unix socket this server binds
@@ -17,6 +19,11 @@ uses:
       DIMOS_APP.recordingsDir:
         required: false
         description: where recordings go until the gateway has answered
+    endpoints:
+      # dim-app's getZenoh: where the zenoh-gateway and this app's namespace are
+      - GET management/gateways/zenoh
+  # the page's live topics (pose, lidar, cameras) and the drive Twist (tele_cmd_vel, with a deadman)
+  '@zenoh-gateway': '>=0.5 <0.6'
 provides:
   info:
     x-when: 'you need to monitor a Deep Robotics M20 quadruped''s computers, record them, or command it through a blueprint'
