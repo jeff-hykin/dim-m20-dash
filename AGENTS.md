@@ -10,6 +10,9 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
   - `stats.ts`: the stats loop each board runs over ssh, and its parser. `boards.ts`: one source per board (ssh or
     fake), a TCP probe of port 22, the indicators. `fake.ts`: simulated boards whose state changes over time.
   - `blueprint.ts`: blueprint mode (GET active, active/streams, peek, active/modules; motion = M20Connection's RPCs).
+  - `robot.ts`: the M20's own status (motion, gait, charging, e-stop, batteries, joint temperatures, errors) from AOS's
+    basic_server reports (UDP 10.21.31.103:30000). It sends only the heartbeat (Type 100/100), never a command; keep
+    it that way (`robot_test.ts` checks). Needs `--unstable-net`.
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl). `settings.ts`: `<dataDir>/settings.json`.
 - `frontend/` (React + Vite, like G1 Ctrl and Go2 Ctrl; `frontend/dist` is built and committed so no robot builds it):
   `src/App.tsx` the page (main view = camera or 3D, panels on the left, command dock, d-pad / phone thumb sticks);
