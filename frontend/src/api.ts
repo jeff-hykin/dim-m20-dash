@@ -107,6 +107,7 @@ export type Robot = {
         chargeName: string
         hardEstop: boolean
         usage: string
+        usageMode: number
         sleep: string
         singleBattery: boolean
         version: string | null
@@ -134,6 +135,9 @@ export type AppState = {
     boards: Board[]
     blueprint: Blueprint | null
     directMotion: string | null
+    /** whether the current mode's driving would move the robot, why not, and whether Enable driving fixes it */
+    driving: { ok: boolean; reason: string | null; fixable: boolean; known: boolean }
+    direct: { moving: boolean; axes: number[]; busy: string | null }
     record: RecordState
     robot: Robot
     now: number

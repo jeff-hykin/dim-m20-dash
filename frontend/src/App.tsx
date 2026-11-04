@@ -49,12 +49,36 @@ const DPAD: { key: keyof typeof KEY_AXES; cls: string; icon: string; help: strin
 ]
 
 type Motion = {
-    action: "standup" | "liedown" | "dock"
+    action: "standup" | "liedown" | "dock" | "enable" | "direct"
     label: string
     rpc: string
     tone: string
     title: string
     warn: string
+}
+/** Enable driving: what it does in each mode (POST api/drive/enable) */
+const enableMotion = (mode: "blueprint" | "direct"): Motion => ({
+    action: "enable",
+    label: "Enable driving",
+    rpc: "",
+    tone: "good",
+    title: "Put the robot in the state this mode drives in",
+    warn: mode === "blueprint"
+        ? "Runs <b>m20 stand</b>: navigation control mode, then the robot <b>STANDS UP</b> into RL control and its " +
+            "walking gait (steps already done are skipped). It refuses on the dock. Make sure nothing is around its legs."
+        : "Switches the robot to <b>regular control mode</b> (the one that takes direct commands), then it <b>STANDS " +
+            "UP</b> into RL control. Make sure nothing is around its legs.",
+})
+const DIRECT_SWITCH: Motion = {
+    action: "direct",
+    label: "Direct mode",
+    rpc: "",
+    tone: "warn",
+    title: "Drive through the robot's basic_server instead of the blueprint",
+    warn: "A blueprint is running and drives the robot in <b>navigation</b> control mode. Direct mode drives through " +
+        "the robot's own basic_server instead, which needs <b>regular</b> control mode (Enable driving switches it), " +
+        "so the blueprint's navigation stops moving the robot. When the next blueprint run starts, M20 Ctrl goes back " +
+        "to blueprint mode.",
 }
 const MOTIONS: Motion[] = [
     {
@@ -201,7 +225,12 @@ function RobotCard({ robot }: { robot: Robot }) {
                 <span className="k">gait</span>
                 <span className="v">{b?.gaitName ?? "–"}</span>
                 <span className="k">control mode</span>
-                <span className="v">{b?.usage ?? "–"}</span>
+                <span
+                    className="v"
+                    title="navigation: follows the blueprint's velocity; regular: follows direct (axis) commands"
+                >
+                    {b?.usage ?? "–"}
+                </span>
                 <span className="k">charging</span>
                 <span className={`v${b?.charge === 4 ? " danger" : ""}`}>{b?.chargeName ?? "–"}</span>
                 {robot.battery && <BatteryRow label="battery L" battery={robot.battery.left} />}
@@ -579,10 +608,10 @@ export function App() {
         const d = drive.current
         if (!state) {
             d.setTarget({ kind: "none", why: "waiting for M20 Ctrl's backend" })
+        } else if (state.mode === "direct") {
+            d.setTarget({ kind: "direct" })
         } else if (state.source === "fake") {
             d.setTarget({ kind: "fake" })
-        } else if (state.mode === "direct") {
-            d.setTarget({ kind: "none", why: state.directMotion ?? "direct mode has no motion" })
         } else if (!underDesktop) {
             d.setTarget({
                 kind: "none",
@@ -596,6 +625,11 @@ export function App() {
             d.setTarget({ kind: "topic", key: teleop.channel!, stream: teleop.name })
         }
     }, [state?.source, state?.mode, bp?.running, teleop?.channel])
+    const driving = state?.driving ?? null
+    const drivingRef = useRef(driving)
+    drivingRef.current = driving
+    /** the Enable driving button, flashed when a drive input is refused */
+    const [pointAtEnable, setPointAtEnable] = useState(0)
     useEffect(() => {
         drive.current.dryRun = dryRun
     }, [dryRun])
@@ -612,6 +646,16 @@ export function App() {
             if (Date.now() - hintAt.current > 4000) {
                 hintAt.current = Date.now()
                 showToast(`Can't drive: ${d.target.why}`)
+            }
+            return
+        }
+        // the robot isn't in the state this mode drives in: nothing is sent; point at the fix
+        const ready = drivingRef.current
+        if (moving && ready && !ready.ok) {
+            if (Date.now() - hintAt.current > 2500) {
+                hintAt.current = Date.now()
+                showToast(`Driving disabled: ${ready.reason}${ready.fixable ? ". Tap Enable driving." : ""}`)
+                setPointAtEnable(Date.now())
             }
             return
         }
@@ -642,9 +686,7 @@ export function App() {
             return "waiting for the backend"
         }
         if (state.mode === "direct") {
-            return m.action === "dock"
-                ? "docking is the blueprint's M20Connection dock skill: blueprint mode only"
-                : state.directMotion
+            return state.robot.link === "up" ? null : "no status from the robot's basic_server"
         }
         if (!bp?.running) {
             return "no blueprint running"
@@ -658,18 +700,27 @@ export function App() {
         return null
     }
     const runMotion = async (m: Motion) => {
+        if (m.action === "direct") {
+            await call("PUT", "api/mode", { mode: "direct" }).catch((e) => showToast(message(e)))
+            refresh()
+            return
+        }
         setBusy(m.action)
         try {
             const result = await call<
                 { ok?: boolean; result?: unknown; error?: string; dryRun?: boolean; wouldCall?: string }
             >(
                 "POST",
-                "api/motion",
-                { action: m.action, dryRun },
+                m.action === "enable" ? "api/drive/enable" : "api/motion",
+                m.action === "enable" ? { dryRun } : { action: m.action, dryRun },
             )
             showToast(
                 result.dryRun
-                    ? `Dry run: would call ${result.wouldCall}`
+                    ? `Dry run: would ${
+                        result.wouldCall
+                            ? `call ${result.wouldCall}`
+                            : (result as { wouldDo?: string[] }).wouldDo?.join(", ")
+                    }`
                     : result.ok
                     ? `${m.label}: ${typeof result.result === "string" ? result.result : JSON.stringify(result.result)}`
                     : `${m.label} failed: ${result.error}`,
@@ -840,6 +891,10 @@ export function App() {
     }
 
     const setMode = async (mode: "blueprint" | "direct") => {
+        if (mode === "direct" && state?.mode !== "direct" && bp?.running) {
+            setConfirm(DIRECT_SWITCH)
+            return
+        }
         await call("PUT", "api/mode", { mode }).catch((e) => showToast(message(e)))
         refresh()
     }
@@ -946,8 +1001,31 @@ export function App() {
         </>
     )
 
+    const driveOff = !!driving && !driving.ok && (driving.known || state?.mode === "direct")
+    const driveBanner = (where: "side" | "phone") =>
+        driveOff && driving
+            ? (
+                <div className={`drive-off-banner ${where}`} data-ui="drive.disabled" role="status">
+                    <span>
+                        <b>Driving disabled:</b> {driving.reason}
+                    </span>
+                    {driving.fixable && state && (
+                        <button
+                            type="button"
+                            key={pointAtEnable}
+                            className={`dim-btn sm good${Date.now() - pointAtEnable < 3000 ? " point" : ""}`}
+                            data-ui="drive.enable"
+                            onClick={() => setConfirm(enableMotion(state.mode))}
+                        >
+                            Enable driving
+                        </button>
+                    )}
+                </div>
+            )
+            : null
+
     return (
-        <div className={`stage${fake ? " fake" : ""}`}>
+        <div className={`stage${fake ? " fake" : ""}${driveOff ? " drive-off" : ""}`}>
             {/* the main view */}
             <div className={`main-view ${view.main}${view.main === "camera" && cameraLive ? " live" : ""}`}>
                 <div className="cam-box" style={{ display: view.main === "camera" ? undefined : "none" }}>
@@ -1046,6 +1124,17 @@ export function App() {
                             )
                             : `${lowestPack}%`}
                         {charging ? " ⚡" : ""}
+                    </span>
+                )}
+                {robotUp && robot?.basic && (
+                    <span
+                        className={`dim-badge pill hide-phone ${driving?.ok ? "ok" : "warn"}`}
+                        title={`the robot's control mode: ${robot.basic.usage} (blueprint mode drives in navigation, direct mode in regular)`}
+                    >
+                        <span className="dot" />
+                        {robot.basic.usage === "navigation"
+                            ? "Nav mode"
+                            : `${robot.basic.usage[0].toUpperCase()}${robot.basic.usage.slice(1)} mode`}
                     </span>
                 )}
                 {hotMotor && (
@@ -1169,7 +1258,7 @@ export function App() {
                         <div className="kv">
                             <span className="k">blueprint</span>
                             <span className="v">
-                                {state?.mode === "direct" ? "–" : bp?.running ? bp.blueprint : "none"}
+                                {bp?.running ? bp.blueprint : "none"}
                             </span>
                             <span className="k">connection</span>
                             <span className="v">{bp?.connection?.id ?? "–"}</span>
@@ -1177,6 +1266,8 @@ export function App() {
                             <span className="v" title={target.kind === "none" ? target.why : ""}>
                                 {target.kind === "topic"
                                     ? target.stream
+                                    : target.kind === "direct"
+                                    ? "basic_server"
                                     : target.kind === "fake"
                                     ? "simulated"
                                     : "none"}
@@ -1376,6 +1467,7 @@ export function App() {
             </div>
 
             {/* desktop: the speeds beside the video, over the readout and the pad */}
+            {driveBanner("side")}
             <div className="side-speeds dim-panel glass">
                 <SpeedStepper
                     label="Driving speed"
@@ -1412,6 +1504,8 @@ export function App() {
                             ? "dry run"
                             : target.kind === "topic"
                             ? target.stream
+                            : target.kind === "direct"
+                            ? "basic_server"
                             : target.kind === "fake"
                             ? "simulated"
                             : "can't drive"}
@@ -1457,6 +1551,7 @@ export function App() {
             {/* phone: two thumbs (left moves, right turns) with STOP between */}
             <div className="sticks">
                 {/* the speeds, over each thumb: − / + (saved on this device) */}
+                {driveBanner("phone")}
                 <div className="stick-speeds">
                     <SpeedStepper
                         label="speed"
@@ -1493,6 +1588,8 @@ export function App() {
                                 ? "dry run"
                                 : target.kind === "topic"
                                 ? target.stream
+                                : target.kind === "direct"
+                                ? "basic_server"
                                 : target.kind === "fake"
                                 ? "simulated"
                                 : "can't drive"}
@@ -1624,7 +1721,14 @@ export function App() {
                         <div className="glyph">
                             <Icon name="warn" size={44} />
                         </div>
-                        <h2 className="dim-h1">{confirm.label} — {dryRun ? "dry run" : "the robot moves"}</h2>
+                        <h2 className="dim-h1">
+                            {confirm.label} —{" "}
+                            {confirm.action === "direct"
+                                ? "switch how it drives"
+                                : dryRun
+                                ? "dry run"
+                                : "the robot moves"}
+                        </h2>
                         {/* the warnings are this file's own text, with <b> for emphasis */}
                         <p
                             dangerouslySetInnerHTML={{

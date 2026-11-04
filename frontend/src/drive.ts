@@ -11,6 +11,9 @@ import { DEADMAN_MS, type Live } from "./live.ts"
 import { Priority } from "./dim-app/source/vendor/zenoh-gateway/zenoh_gateway.js"
 
 export const PUBLISH_HZ = 20
+/** direct mode: a held drive renews its move this often; each holds this long */
+const DIRECT_RENEW_MS = 150
+const DIRECT_HOLD_MS = 400
 export type Axes = { forward: number; strafe: number; turn: number }
 export type Twist = { x: number; y: number; yaw: number }
 export type Speeds = { linear: number; angular: number }
@@ -26,6 +29,8 @@ export type DriveTarget =
     | { kind: "topic"; key: string; stream: string }
     /** the fake boards: move the simulated robot */
     | { kind: "fake" }
+    /** direct mode: the backend's axis commands to basic_server (POST api/direct/move, renewed while held) */
+    | { kind: "direct" }
     /** nothing can be driven, and why */
     | { kind: "none"; why: string }
 
@@ -154,6 +159,51 @@ export class Drive {
         }
     }
 
+    /** Direct mode: a held drive renews the backend's move every DIRECT_RENEW_MS (it lapses on its own after
+     * DIRECT_HOLD_MS); a release sends one stop. Axes are shares of the robot's top speed (the speed limits' maxima). */
+    #directSent = 0
+    #directMoving = false
+    #direct(twist: Twist, moving: boolean) {
+        if (this.live.fake) {
+            this.live.fake.twist = { ...twist } // the 3D view's simulated pose follows too
+        }
+        if (!moving) {
+            if (this.#directMoving) {
+                this.#directMoving = false
+                fetch("api/direct/stop", {
+                    method: "POST",
+                    headers: { "content-type": "application/json" },
+                    body: "{}",
+                })
+                    .catch(() => {})
+            }
+            this.#update({ publishing: false })
+            return
+        }
+        const now = Date.now()
+        if (this.#directMoving && now - this.#directSent < DIRECT_RENEW_MS) {
+            return
+        }
+        this.#directMoving = true
+        this.#directSent = now
+        const share = (value: number, max: number) => Math.max(-1, Math.min(1, Math.round((value / max) * 1000) / 1000))
+        fetch("api/direct/move", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+                x: share(twist.x, SPEED_LIMITS.linear[1]),
+                y: share(twist.y, SPEED_LIMITS.linear[1]),
+                yaw: share(twist.yaw, SPEED_LIMITS.angular[1]),
+                durationMs: DIRECT_HOLD_MS,
+            }),
+        }).then(async (response) => {
+            const error = response.ok
+                ? null
+                : (await response.json().catch(() => ({}))).error ?? `HTTP ${response.status}`
+            this.#update({ publishing: response.ok, sent: this.status.sent + 1, error })
+        }).catch((error) => this.#update({ publishing: false, error: String(error) }))
+    }
+
     #closePublisher() {
         const current = this.#publisher
         if (!current) {
@@ -197,6 +247,10 @@ export class Drive {
         const target = this.target
         if (this.dryRun || target.kind === "none") {
             this.#update({ publishing: false, error: null })
+            return
+        }
+        if (target.kind === "direct") {
+            this.#direct(twist, moving)
             return
         }
         if (target.kind === "fake") {
