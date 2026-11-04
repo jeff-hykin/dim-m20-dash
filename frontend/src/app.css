@@ -1171,26 +1171,53 @@ body.science .seg .dim-btn.on, body.science .dim-btn.sm.on {
     align-items: center;
 }
 
-/* record */
+/* record: Go2 Ctrl's control, a solid red split button (Record | ⋯) whose dot turns into a pulsing square while it
+   records */
+.rec-split {
+    display: flex;
+    flex: none;
+}
+/* Go2 Ctrl's literal reds (not the skin's --danger, which is amber in some skins): a recording button reads as one
+   in every skin, the same in both apps */
+body.science .rec-btn.dim-btn,
+body.science .rec-more-btn.dim-btn,
+body.science .rec-btn.dim-btn.sm.on,
+body.science .rec-more-btn.dim-btn.sm {
+    background: #b91c1c;
+    color: #fff;
+    border-color: #ef4444;
+}
+body.science .rec-btn.dim-btn:hover, body.science .rec-more-btn.dim-btn:hover {
+    background: #dc2626;
+}
 .rec-btn {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
 }
 .rec-dot {
-    width: 8px;
-    height: 8px;
+    width: 9px;
+    height: 9px;
     border-radius: 50%;
-    background: var(--danger);
-}
-body.science .dim-btn.rec-btn.on {
-    color: var(--danger-fg);
-    background: var(--danger);
-    border-color: var(--danger);
+    background: #fff;
+    flex: none;
 }
 .rec-btn.on .rec-dot {
-    background: var(--danger-fg);
-    border-radius: 1px;
+    border-radius: 2px;
+    animation: pulse 1s ease-in-out infinite;
+}
+.rec-more-btn.dim-btn {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left-width: 0;
+    font-size: 18px;
+    line-height: 1;
+    padding-left: 9px;
+    padding-right: 9px;
 }
 
 /* over the main view, top right under the bar: front / rear (or the 3D tools) and the camera / 3D swap */
@@ -1656,9 +1683,6 @@ html[data-dim-square] body.science .dr-thumbstick-base, html[data-dim-square] bo
 }
 
 /* the Record button's ⋯ panel (RecordPanel.tsx) */
-.rec-more {
-    margin-left: -6px;
-}
 .record-panel {
     position: absolute;
     top: calc(var(--topbar-h, 58px) + 4px);

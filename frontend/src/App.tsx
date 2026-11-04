@@ -489,6 +489,9 @@ export function App() {
     const [busy, setBusy] = useState<string | null>(null)
     const [lastRecording, setLastRecording] = useState("")
     const [recordPanel, setRecordPanel] = useState(false)
+    const [recordBusy, setRecordBusy] = useState(false)
+    /** the recording's clock ticks here every second (as Go2 Ctrl's does), not only when api/state comes back */
+    const [recordNow, setRecordNow] = useState(Date.now())
     /** the overheat warning, acknowledged until the motors are back under TEMP_WARM and no overheat error remains */
     const [overheatDismissed, setOverheatDismissed] = useState(false)
     const [settingsForm, setSettingsForm] = useState({ source: "ssh", boards: "", note: "" })
@@ -972,7 +975,15 @@ export function App() {
 
     // ── record ──
     const record = state?.record
+    useEffect(() => {
+        if (!record?.active) {
+            return
+        }
+        const timer = setInterval(() => setRecordNow(Date.now()), 1000)
+        return () => clearInterval(timer)
+    }, [record?.active])
     const toggleRecord = async () => {
+        setRecordBusy(true)
         try {
             if (record?.active) {
                 const stopped = await call<{ file?: string }>("POST", "api/record/stop")
@@ -984,7 +995,8 @@ export function App() {
         } catch (error) {
             showToast(`Recording: ${message(error)}`)
         }
-        refresh()
+        await refresh()
+        setRecordBusy(false)
     }
 
     const setMode = async (mode: "blueprint" | "direct") => {
@@ -1286,37 +1298,41 @@ export function App() {
                 )}
                 <PadChip pad={pad} />
                 <div className="spacer" />
-                <button
-                    type="button"
-                    data-ui="record"
-                    className={`dim-btn sm rec-btn${record?.active ? " on" : ""}`}
-                    title={record?.active
-                        ? `Recording to ${record.file}: click to stop and save it`
-                        : "Record to an .mcap: the cameras, lidar, pose, tf, driving, robot status and board stats (⋯ picks)"}
-                    onClick={toggleRecord}
-                >
-                    <span className="rec-dot" />
-                    {record?.active
-                        ? (
-                            <>
-                                <span className="hide-phone">Stop ·{" "}</span>
-                                {clock(record.seconds)}
-                                <span className="hide-phone">{" "}· {megabytes(record.bytes)}</span>
-                            </>
-                        )
-                        : <span className="hide-phone">Record</span>}
-                </button>
-                <button
-                    type="button"
-                    data-ui="record.options"
-                    className={`dim-btn sm icon rec-more${recordPanel ? " on" : ""}`}
-                    title="Recording options and past recordings"
-                    aria-label="Recording options"
-                    aria-expanded={recordPanel}
-                    onClick={() => setRecordPanel(!recordPanel)}
-                >
-                    <Icon name="more" size={14} />
-                </button>
+                {/* Go2 Ctrl's record control: a solid red split button, Record | ⋯ (Stop · time · size while recording) */}
+                <div className="rec-split">
+                    <button
+                        type="button"
+                        data-ui="record"
+                        className={`dim-btn sm rec-btn${record?.active ? " on" : ""}`}
+                        disabled={recordBusy}
+                        title={record?.active
+                            ? `Recording to ${record.file}: click to stop and save it`
+                            : "Record to an .mcap: the cameras, lidar, pose, tf, driving, robot status, board stats and system logs (⋯ picks)"}
+                        onClick={toggleRecord}
+                    >
+                        <span className="rec-dot" />
+                        {recordBusy ? record?.active ? "Saving…" : "Starting…" : record?.active
+                            ? (
+                                <>
+                                    <span className="hide-phone">Stop ·{" "}</span>
+                                    {clock((recordNow - record.startedAt) / 1000)}
+                                    <span className="hide-phone">{" "}· {megabytes(record.bytes)}</span>
+                                </>
+                            )
+                            : "Record"}
+                    </button>
+                    <button
+                        type="button"
+                        data-ui="record.options"
+                        className="dim-btn sm rec-more-btn"
+                        title="Recording options"
+                        aria-label="Recording options"
+                        aria-expanded={recordPanel}
+                        onClick={() => setRecordPanel(!recordPanel)}
+                    >
+                        ⋯
+                    </button>
+                </div>
                 <button
                     type="button"
                     data-ui="stop"
