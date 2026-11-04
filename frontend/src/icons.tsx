@@ -13,6 +13,8 @@ const PATHS: Record<string, string> = {
     menu: "M4 6h16M4 12h16M4 18h16",
     gamepad:
         "M6 8h12a4 4 0 0 1 4 4v2a3 3 0 0 1-5.4 1.8L15 14H9l-1.6 1.8A3 3 0 0 1 2 14v-2a4 4 0 0 1 4-4Zm2 2v4m-2-2h4m6-1h.01M17 13h.01",
+    close: "M6 6l12 12M18 6 6 18",
+    more: "M5 12h.01M12 12h.01M19 12h.01",
     swap: "M7 7h13l-4-4M17 17H4l4 4",
     cube: "M12 3 4 7.5v9L12 21l8-4.5v-9L12 3Zm0 0v0M4 7.5l8 4.5 8-4.5M12 12v9",
     // the M20: a four-legged body seen side on

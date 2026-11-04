@@ -59,9 +59,34 @@ export type Blueprint = {
     peeked: Record<string, { type: string; value: unknown; ts: number | null; at: number }>
 }
 
+export type StreamCounts = { written: number; received: number; skipped: number; dropped: number }
+
 export type RecordState =
     | { active: false }
-    | { active: true; file: string; startedAt: number; seconds: number; bytes: number; messages: number }
+    | {
+        active: true
+        file: string
+        files: string[]
+        startedAt: number
+        seconds: number
+        bytes: number
+        partBytes: number
+        messages: number
+        dropped: number
+        streams: Record<string, StreamCounts>
+        tap: { state: "off" | "starting" | "running" | "exited" | "unavailable"; error: string | null }
+    }
+
+export type StreamChoice = { on: boolean; maxHz: number | null }
+export type RecordOptions = {
+    streams: Record<string, StreamChoice>
+    label: string
+    folder: string
+    splitMinutes: number | null
+    splitMb: number | null
+}
+export type RecordGroup = { id: string; label: string; about: string; keys: string[]; fullRate: string }
+export type RecordingFile = { file: string; bytes: number; modified: string | null; recording: boolean }
 
 export type Battery = { level: number; voltage: number; celsius: number; charging: boolean; present: boolean }
 /** the M20's own status (backend/robot.ts: basic_server's reports, heartbeats only) */

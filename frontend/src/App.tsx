@@ -14,6 +14,7 @@ import { GAMEPAD_BINDINGS, GamepadDriver, type GamepadStatus, noPad, type PadLik
 import { Icon } from "./icons.tsx"
 import { type CameraName, type LinkState, Live } from "./live.ts"
 import { createScene3D, type Scene3D } from "./scene3d.ts"
+import { RecordPanel } from "./RecordPanel.tsx"
 import { releaseAllThumbSticks, ThumbStick } from "./ThumbStick.tsx"
 
 const POLL_MS = 1000
@@ -436,6 +437,7 @@ export function App() {
     const [points, setPoints] = useState(0)
     const [busy, setBusy] = useState<string | null>(null)
     const [lastRecording, setLastRecording] = useState("")
+    const [recordPanel, setRecordPanel] = useState(false)
     /** the overheat warning, acknowledged until the motors are back under TEMP_WARM and no overheat error remains */
     const [overheatDismissed, setOverheatDismissed] = useState(false)
     const [settingsForm, setSettingsForm] = useState({ source: "ssh", boards: "", note: "" })
@@ -1065,13 +1067,30 @@ export function App() {
                     className={`dim-btn sm rec-btn${record?.active ? " on" : ""}`}
                     title={record?.active
                         ? `Recording to ${record.file}: click to stop and save it`
-                        : "Record the boards' stats (and the blueprint's watched streams) to an .mcap"}
+                        : "Record to an .mcap: the cameras, lidar, pose, tf, driving, robot status and board stats (⋯ picks)"}
                     onClick={toggleRecord}
                 >
                     <span className="rec-dot" />
                     {record?.active
-                        ? `Stop · ${clock(record.seconds)} · ${megabytes(record.bytes)}`
+                        ? (
+                            <>
+                                <span className="hide-phone">Stop ·{" "}</span>
+                                {clock(record.seconds)}
+                                <span className="hide-phone">{" "}· {megabytes(record.bytes)}</span>
+                            </>
+                        )
                         : <span className="hide-phone">Record</span>}
+                </button>
+                <button
+                    type="button"
+                    data-ui="record.options"
+                    className={`dim-btn sm icon rec-more${recordPanel ? " on" : ""}`}
+                    title="Recording options and past recordings"
+                    aria-label="Recording options"
+                    aria-expanded={recordPanel}
+                    onClick={() => setRecordPanel(!recordPanel)}
+                >
+                    <Icon name="more" size={14} />
                 </button>
                 <button
                     type="button"
@@ -1091,6 +1110,8 @@ export function App() {
                         : "Simulated: fake boards and a simulated robot (Settings → source). Nothing goes to the M20."}
                 </div>
             )}
+
+            {recordPanel && <RecordPanel record={record} onClose={() => setRecordPanel(false)} onToast={showToast} />}
 
             <div className={`left-col${panelsOpen ? " open" : ""}`}>
                 <div className="rail">
