@@ -1,5 +1,5 @@
 // Facts about a Deep Robotics M20 (Lynx) and the way we set them up: addresses, logins, which board is which.
-export const VERSION = "0.3.10"
+export const VERSION = "0.3.12"
 export const REPO = "jeff-hykin/dim-m20-dash"
 export const RELEASE_TAG = `m20tool-v${VERSION}`
 export const INSTALL_ONE_LINER = `curl -fsSL https://raw.githubusercontent.com/${REPO}/main/m20tool/install.sh | sh`
@@ -67,6 +67,7 @@ COMMANDS
   m20tool install-on-dog        install this m20tool on GOS and AOS (also the last step of setup)
   m20tool status | battery      read-only: what the robot reports (sends only basic_server's heartbeat)
   m20tool stand | direct | lie_down | dock | undock | stop     move the robot (see m20tool <command> --help)
+  m20tool charge_reset                                     clear a charging task stuck in error (it keeps making the robot lie down)
   The robot commands work on GOS and AOS with no arguments (basic_server is ${AOS_IP}); on a laptop they talk to
   ${AOS_IP} directly when it answers (hotspot), else run on GOS over ssh. --dry-run prints every frame, sends none.
   \`m20\` (~/.local/bin/m20 on the boards) is the same tool, for M20 Ctrl and the Controller's buttons.

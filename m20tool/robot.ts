@@ -39,6 +39,8 @@ import {
     USAGE_NAVIGATION,
     USAGE_REGULAR,
 } from "../backend/basic_server.ts"
+import { BOARD_PASSWORD, NOS_IP, USER } from "./dog.ts"
+import { run } from "./remote.ts"
 
 export class Fail extends Error {}
 
@@ -538,6 +540,47 @@ export async function dock(
     }
 }
 
+/**
+ * Clears a charging task stuck in error (or still backing off the dock): the vendor's charge_manager then stops
+ * forcing the robot down. Refuses on the dock, where the same command would undock it. The charging stop alone doesn't
+ * clear an error (0x1002 after a lost dock stays put), so then it restarts charge_manager on NOS, which comes back idle.
+ */
+export async function chargeReset(link: Link) {
+    link.note("(refuses if BasicStatus.Charge is 1 = entering, 2 = charging or 5 = on the dock: use undock there)")
+    const status = await link.basic()
+    const charge = status?.Charge as number | undefined
+    if (charge === CHARGE_ENTERING || charge === CHARGE_CHARGING || charge === CHARGE_ON_DOCK) {
+        throw new Fail(`not resetting: the robot is ${name(CHARGE, charge)}; m20tool undock leaves the dock`)
+    }
+    if (charge === CHARGE_IDLE) {
+        link.done("charging is already idle")
+        return
+    }
+    await link.udp(2, 24, { Charge: 0 }, "autonomous charging -> stop")
+    if (await link.wait("Charge", CHARGE_IDLE, 10, "charging idle")) {
+        link.done("charging is idle")
+        return
+    }
+    const restart = "sudo -S -p '' systemctl restart charge_manager.service"
+    if (link.dryRun) {
+        link.out(`  if it isn't idle by then: ssh ${USER}@${NOS_IP} ${restart}, then wait up to 20 s for charging idle`)
+        return
+    }
+    const nos = { name: "NOS", target: `${USER}@${NOS_IP}`, sharedAddress: true } as const
+    const restarted = await run(nos, restart, { stdinText: `${BOARD_PASSWORD}\n`, timeoutSeconds: 30 })
+    if (restarted.code !== 0) {
+        throw new Fail(
+            `the charging stop didn't clear it, and restarting charge_manager on NOS failed: ${restarted.stderr}`,
+        )
+    }
+    if (await link.wait("Charge", CHARGE_IDLE, 20, "charging idle after the restart")) {
+        link.done("charging is idle (restarted charge_manager on NOS)")
+    } else {
+        const now_ = await link.basic()
+        throw new Fail(`restarted charge_manager on NOS, but charge still reads ${name(CHARGE, now_?.Charge)}`)
+    }
+}
+
 export async function undock(link: Link) {
     link.note("(refuses if BasicStatus.Charge is 0 = idle: not on the dock)")
     let status = await link.basic()
@@ -674,6 +717,11 @@ export const COMMANDS = {
             "start autonomous charging (stand ~2 m in front of the dock, facing both reflectors); watched in the background",
     },
     undock: { run: undock, actuates: true, about: "leave the dock, then stand (as m20tool stand)" },
+    charge_reset: {
+        run: chargeReset,
+        actuates: false,
+        about: "clear a charging task stuck in error (it keeps making the robot lie down); refuses on the dock",
+    },
     stop: { run: stop, actuates: true, about: "zero velocity (regular mode only; in navigation mode use lie_down)" },
     status: {
         run: status,
