@@ -36,7 +36,18 @@ const decoder = new TextDecoder()
 /** Tests only: M20_TEST_ROOT holds a fake board's filesystem; the board's paths (/etc, /usr, /home, /root, /run, /opt,
  * /sys, /proc, setup's /tmp uploads) map into it, and absolute commands too (a fake deno, office-nat, ...). */
 const testRoot = Deno.env.get("M20_TEST_ROOT") ?? ""
-const BOARD_PREFIXES = ["/etc/", "/usr/", "/home/", "/root/", "/run/", "/opt/", "/sys/", "/proc", "/tmp/m20tool-upload"]
+const BOARD_PREFIXES = [
+    "/boot/",
+    "/etc/",
+    "/usr/",
+    "/home/",
+    "/root/",
+    "/run/",
+    "/opt/",
+    "/sys/",
+    "/proc",
+    "/tmp/m20tool-upload",
+]
 export function at(path: string): string {
     if (!testRoot || path.startsWith(testRoot) || path === Deno.execPath()) {
         return path

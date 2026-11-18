@@ -961,6 +961,119 @@ const wifi: BoardStep = {
     },
 }
 
+// ---------------------------------------------------------------------------------------------------- cores
+
+/** the device tree U-Boot loads (extlinux.conf's fdt line, links followed): its /chosen bootargs are the kernel's line */
+function bootDtb(): string | null {
+    const fdt = (readText("/boot/extlinux/extlinux.conf") ?? "").match(/^\s*fdt\s+(\S+)/m)?.[1]
+    try {
+        return fdt ? Deno.realPathSync(at(`/boot/${fdt.replace(/^\//, "")}`)) : null
+    } catch {
+        return null
+    }
+}
+const ISOLCPUS = new TextEncoder().encode("isolcpus=")
+/** the [start, end) bytes of the dtb's isolcpus=<list>, if it has one */
+function isolcpusAt(bytes: Uint8Array): [number, number] | null {
+    search: for (let i = 0; i + ISOLCPUS.length <= bytes.length; i++) {
+        for (let j = 0; j < ISOLCPUS.length; j++) {
+            if (bytes[i + j] !== ISOLCPUS[j]) {
+                continue search
+            }
+        }
+        let end = i + ISOLCPUS.length
+        while (end < bytes.length && /[0-9,-]/.test(String.fromCharCode(bytes[end]))) {
+            end++
+        }
+        return [i, end]
+    }
+    return null
+}
+const isolatedDtb = () => {
+    const dtb = bootDtb()
+    return dtb && isolcpusAt(Deno.readFileSync(dtb)) ? dtb : null
+}
+const DESKTOP_DROPINS = "/home/user/.config/systemd/user/dimos-desktop.service.d"
+/** Desktop's drop-ins with a CPUAffinity line (one pinned every dimos run to the isolated cores, all on one of them) */
+function pinnedDropins(): string[] {
+    try {
+        return [...Deno.readDirSync(at(DESKTOP_DROPINS))]
+            .filter((e) => e.isFile && e.name.endsWith(".conf"))
+            .map((e) => `${DESKTOP_DROPINS}/${e.name}`)
+            .filter((path) => /^CPUAffinity=/m.test(readText(path) ?? ""))
+    } catch {
+        return []
+    }
+}
+
+// GOS boots with isolcpus=4-7 (the vendor's image; nothing of theirs runs there on GOS): the scheduler never balances
+// those cores, so whatever is pinned to them piles onto one. dimos then ran on core 4 alone.
+const gosAllCores: BoardStep = {
+    id: "gos/all-cores",
+    board: "GOS",
+    title:
+        "GOS: dimos balanced over all 8 cores (isolcpus blanked in the boot device tree, from the next reboot; no CPUAffinity in Desktop's drop-ins)",
+    root: true,
+    check: () => {
+        const dtb = isolatedDtb()
+        return Promise.resolve({
+            todos: [
+                ...(dtb ? [`${dtb} boots with isolcpus`] : []),
+                ...pinnedDropins().map((path) => `${path} pins Desktop's cores`),
+            ],
+        })
+    },
+    actions: () => [
+        {
+            kind: "do",
+            text:
+                "blank isolcpus=<list> in the boot device tree with spaces of the same length (bootargs keep their size, nothing else moves; the old file kept as .bak-m20tool-<time>); takes effect on the next reboot",
+            run: () => {
+                const dtb = isolatedDtb()
+                if (!dtb) {
+                    return
+                }
+                const bytes = Deno.readFileSync(dtb)
+                const [start, end] = isolcpusAt(bytes)!
+                const fixed = bytes.slice()
+                fixed.fill(0x20, start, end)
+                put(dtb, fixed, Deno.statSync(dtb).mode! & 0o777)
+            },
+        },
+        {
+            kind: "do",
+            text:
+                `drop the CPUAffinity lines from ${DESKTOP_DROPINS}/*.conf (old files kept as .bak-m20tool-<time>); Desktop picks it up when it next starts`,
+            run: () => {
+                for (const path of pinnedDropins()) {
+                    const text = readText(path)!.split("\n").filter((line) => !/^CPUAffinity=/.test(line)).join("\n")
+                    put(path, text, Deno.statSync(at(path)).mode! & 0o777, "user")
+                }
+            },
+        },
+    ],
+}
+
+const CAMERA_CORES = () => [
+    file("/etc/systemd/system/m20-camera.service.d/big-cores.conf", "aos/m20-camera-big-cores.conf", 0o644),
+]
+const aosCameraCores: BoardStep = {
+    id: "aos/camera-cores",
+    board: "AOS",
+    title: "AOS: the camera relay (m20-camera) on big cores 6-7 (a systemd drop-in; restarted only if it's running)",
+    root: true,
+    check: () => Promise.resolve({ todos: filesDiffer(CAMERA_CORES()) }),
+    actions: () => [
+        ...putAll(CAMERA_CORES()),
+        daemonReload(),
+        {
+            kind: "exec",
+            argv: ["systemctl", "try-restart", "m20-camera.service"],
+            ifChanged: /m20-camera\.service\.d\//,
+        },
+    ],
+}
+
 // ---------------------------------------------------------------------------------------------------- queries
 
 const query = (id: string, board: BoardName, root: boolean, run: (p: Params) => Promise<CheckResult>): BoardStep => ({
@@ -991,6 +1104,8 @@ export const STEPS: BoardStep[] = [
     tailscale("GOS"),
     tailscale("AOS"),
     bands,
+    gosAllCores,
+    aosCameraCores,
     wifi,
     aosUplink,
     dropRoute,

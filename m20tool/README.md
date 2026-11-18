@@ -67,6 +67,11 @@ every step with the commands it would run.
    - Tailscale on GOS (`m20-gos`) and AOS (`m20-aos`): the latest arm64 tarball, then `tailscale up` prints a login
      link.
    - Wi-Fi on both bands (radio on, no saved network pinned to one band).
+   - GOS on all 8 cores: `isolcpus=4,5,6,7` blanked (same-length spaces, a backup kept) in the boot device tree that
+     `extlinux.conf`'s `fdt` names, from the next reboot (setup never reboots), and no `CPUAffinity` in Desktop's
+     drop-ins (one pinned all of dimos to the isolated cores, where it piled onto core 4).
+   - AOS's camera relay on big cores 6-7 (`m20-camera.service.d/big-cores.conf`): AOS keeps its `isolcpus` (the
+     vendor pins its lidar, IMU and SLAM there), and on the small cores the front camera couldn't hold 30 fps.
    - joins the Wi-Fi from step 1: saved with autoconnect off (network-safety alone decides), network-safety restarted
      into Wi-Fi mode, then it waits for wlan0 to be on it and pings over wlan0.
    - GOS's uplink through AOS's Wi-Fi (`aos-uplink`), once AOS has internet.

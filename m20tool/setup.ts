@@ -819,6 +819,13 @@ async function stages(options: SetupOptions, ssid: string, password: string) {
             "AOS: Wi-Fi on both 2.4 GHz and 5 GHz (radio on; no saved network pinned to one band)",
             () => ({}),
         ),
+        boardStepOf(
+            dog.gos,
+            "gos/all-cores",
+            "GOS: dimos balanced over all 8 cores (isolcpus out of the boot device tree, from the next reboot; no CPUAffinity in Desktop's drop-ins)",
+            () => ({}),
+        ),
+        boardStepOf(dog.aos, "aos/camera-cores", "AOS: the camera relay (m20-camera) on big cores 6-7", () => ({})),
         ...(ssid ? wifiSteps(dog, ssid, password) : []),
         ...gosUplinkSteps(dog),
     ]

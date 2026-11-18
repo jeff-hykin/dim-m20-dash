@@ -5,6 +5,7 @@
 // Run 1 converges; runs 2-5 apply nothing, run no command that writes, and leave every file as it was (no new files,
 // no rewritten ones, no backups).
 import { assert, assertEquals } from "@std/assert"
+import { fakeBootAndDesktop } from "./fake_boot.ts"
 
 const here = new URL(".", import.meta.url).pathname
 const MAIN = `${here}main.ts`
@@ -127,6 +128,9 @@ function makeBoard(name: "GOS" | "AOS", dir: string): Board {
         "#!/bin/sh\n/opt/robot/scripts/wifi/ap_start.sh start 5G\n\n/opt/robot/scripts/wifi/loop_start_ap.sh\n",
     )
     Deno.writeTextFileSync(`${root}/opt/robot/scripts/board_resources/wifi/ap_start.sh`, "#!/bin/sh\n")
+    if (name === "GOS") {
+        fakeBootAndDesktop(root)
+    }
     return board
 }
 
@@ -269,6 +273,8 @@ Deno.test({
                     }),
                 ],
                 [aos, "aos/bands", () => ({})],
+                [gos, "gos/all-cores", () => ({})],
+                [aos, "aos/camera-cores", () => ({})],
                 [aos, "aos/wifi", () => ({ ssid: "office", password: "s3cret-pass" })],
                 [gos, "gos/aos-uplink", () => ({ aosWlanOnline: true })],
                 [aos, "aos/drop-route", () => ({})],
