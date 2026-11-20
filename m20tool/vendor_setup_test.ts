@@ -141,16 +141,14 @@ Deno.test("chrony on a board: restarted only when it runs and what it reads chan
     }
 })
 
-Deno.test("vendor drop-ins (cpuset, hide-tailscale, ctrlmcu frames, imu-udp): installed with one daemon-reload, no vendor unit restarted, removed by the revert", async () => {
+Deno.test("vendor drop-ins (cpuset, hide-tailscale, ctrlmcu frames): installed with one daemon-reload, no vendor unit restarted, removed by the revert", async () => {
     const fake = fakeBoard()
     try {
         const cpuset = await roundTrip(fake, "aos/vendor-cpuset")
         assertEquals(cpuset.todos.length, 5)
         await roundTrip(fake, "aos/ctrlmcu-hide-tailscale")
         await roundTrip(fake, "aos/ctrlmcu-frames")
-        const udp = await roundTrip(fake, "aos/imu-udp")
-        assertEquals(udp.todos.length, 2)
-        assertEquals(writes(fake), Array(8).fill("W systemctl daemon-reload "))
+        assertEquals(writes(fake), Array(6).fill("W systemctl daemon-reload "))
         // the revert leaves nothing behind but the folders
         const left: string[] = []
         const walk = (dir: string) => {

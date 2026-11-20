@@ -673,7 +673,6 @@ const ROBOT_STEPS = [
 export const SETUP_STEPS: { id: string; optIn?: boolean }[] = [
     ...ROBOT_STEPS.map((id) => ({ id })),
     { id: "aos/ctrlmcu-frames", optIn: true },
-    { id: "aos/imu-udp", optIn: true },
     { id: "gos/all-cores" },
     { id: "aos/camera-cores" },
 ]
