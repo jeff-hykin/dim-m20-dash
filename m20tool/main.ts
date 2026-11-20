@@ -13,7 +13,7 @@ import {
     Link,
     restartAosService,
 } from "./robot.ts"
-import { cleanupRunners, findDog, installSteps, prepare, runStep, setup } from "./setup.ts"
+import { cleanupRunners, findDog, installSteps, prepare, runStep, setup, setupStep } from "./setup.ts"
 import { boardStep } from "./board_step.ts"
 import { type Board, run, sshArgs, sshPortOpen } from "./remote.ts"
 import { compiled } from "./install.ts"
@@ -154,6 +154,18 @@ const cli = new Command()
     .option("--laptop-iface <iface:string>", "This computer's interface with the direct cable (default: found)")
     .action(async (options) => {
         exitCode = await setup({ ...options, dryRun: !!options.dryRun })
+    })
+    .command(
+        "setup-step",
+        "Run one setup step on its own (its check first), or undo it with --revert; without an id, list them",
+    )
+    .arguments("[id:string]")
+    .option("--revert", "Undo the step (puts back what it changed; each undo is idempotent too)")
+    .option("--dry-run", "Run only the read-only check; print the commands it would run, change nothing")
+    .option("--gos <target:string>", "ssh target for GOS")
+    .option("--aos <target:string>", "ssh target for AOS")
+    .action(async (options, id?: string) => {
+        exitCode = await setupStep(id, { ...options, revert: !!options.revert, dryRun: !!options.dryRun })
     })
     .command(
         "install-on-dog",

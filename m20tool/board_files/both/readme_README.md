@@ -62,6 +62,19 @@ Tailscale (dimensionalos.com tailnet): `m20-gos`, `m20-aos`.
   (`/usr/local/bin/usb-ethernet-up`, `90-usb-ethernet.rules`).
 - Every M20 has the same internal addresses, so ssh host keys for 10.21.31.x / 192.168.3.2 differ between dogs.
 
+## The vendor's own services (m20tool setup)
+
+- AOS, `/opt/robot/vendor_fixes`: lio_perception, rsdriver, yesense and height_map_nav run inside a cgroup cpuset of
+  cores 6-7 (`in_cpuset.sh` in their `cpuset-6-7.conf` drop-ins), off rl_deploy's real-time cores 4-5; ctrlmcu starts
+  with `LD_PRELOAD=hide_tailscale.so` (its IP guard exits on a .104/.106 address, which tailscale0 can be). Both take
+  effect when those units next start; setup never restarts them (an rl_deploy restart drops a standing robot).
+- GOS's own rsdriver is masked (NOS's drives the lidar). AOS's old standalone camera relay (`m20-camera.service`) is
+  disabled: `dimos run m20` runs the cameras under its Hosts.
+- dimos's old chrony clock sync is out of `/etc/chrony/chrony.conf` on all three boards (the original:
+  `chrony.conf.orig-before-m20tool`); the clock is PTP.
+- `m20tool setup-step` lists these; `m20tool setup-step <id> --revert` undoes one. `m20tool rust_mode` /
+  `vendor_mode` switch every vendor DrDDS service off / back on.
+
 ## m20tool (/usr/local/bin/m20tool)
 
 - `m20tool help`: addresses, logins, ways in. `m20tool status`, `m20tool battery`: read-only (heartbeat only).

@@ -26,7 +26,7 @@ export type Params = {
 }
 
 export type Action =
-    | { kind: "put"; path: string; content: string; mode: number; owner?: "user" }
+    | { kind: "put"; path: string; content: string | Uint8Array; mode: number; owner?: "user" }
     | { kind: "block"; path: string; body: string }
     | { kind: "exec"; argv: string[]; okCodes?: number[]; stdin?: string; shownStdin?: string; ifChanged?: RegExp }
     | { kind: "do"; text: string; run: () => Promise<void> | void }
@@ -135,7 +135,24 @@ export function put(path: string, content: string | Uint8Array, mode: number, ow
 
 const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i])
 
-export const sameFile = (path: string, content: string) => readText(path) === content
+export function sameFile(path: string, content: string | Uint8Array): boolean {
+    if (typeof content === "string") {
+        return readText(path) === content
+    }
+    try {
+        return sameBytes(Deno.readFileSync(at(path)), content)
+    } catch {
+        return false
+    }
+}
+
+/** Removes the files that are there (recorded as changed, so a daemon-reload after it runs). */
+export function removeFiles(paths: string[]) {
+    for (const path of paths.filter(exists)) {
+        Deno.removeSync(at(path))
+        changedPaths.push(path)
+    }
+}
 
 // ---------------------------------------------------------------------------------------------------- managed blocks
 
@@ -265,9 +282,12 @@ export async function untgz(path: string, dir: string): Promise<string[]> {
 /** How an action reads in a plan (secrets masked). */
 export function describe(action: Action): string {
     if (action.kind === "put") {
-        return `write ${action.path} (${new TextEncoder().encode(action.content).length} bytes, mode ${
-            action.mode.toString(8)
-        }${action.owner ? ", owner user" : ""}; a different existing file is kept as .bak-m20tool-<time>)`
+        const size = typeof action.content === "string"
+            ? new TextEncoder().encode(action.content).length
+            : action.content.length
+        return `write ${action.path} (${size} bytes, mode ${action.mode.toString(8)}${
+            action.owner ? ", owner user" : ""
+        }; a different existing file is kept as .bak-m20tool-<time>)`
     }
     if (action.kind === "block") {
         return `put a ${

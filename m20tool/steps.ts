@@ -16,9 +16,11 @@ import {
     processes,
     put,
     readText,
+    removeFiles,
     sameFile,
     untgz,
 } from "./board.ts"
+import { CHRONY_CONF, CHRONY_ORIGINAL, effectiveLines, withoutDimosClock } from "./chrony.ts"
 import { BOARD_BIN, GOS_IP, OLD_CLI, VERSION } from "./dog.ts"
 import { MASK } from "./scripts.ts"
 
@@ -38,6 +40,8 @@ export type BoardStep = {
     root: boolean
     check: (p: Params) => Promise<CheckResult>
     actions: (p: Params) => Action[]
+    /** undoing it (`m20tool setup-step <id> --revert`): what is left to undo, and the actions (no-ops once undone) */
+    revert?: { check: (p: Params) => Promise<string[]>; actions: (p: Params) => Action[] }
 }
 
 export const fileText = (path: string) => Deno.readTextFileSync(new URL(`./board_files/${path}`, import.meta.url))
@@ -45,12 +49,17 @@ export const fileText = (path: string) => Deno.readTextFileSync(new URL(`./board
 /** ~/.local/bin/m20 is the shim earlier installs put there (a script running m20tool), not someone's own CLI */
 const oldWrapper = () => readText(OLD_CLI)?.includes(`exec ${BOARD_BIN}`) ?? false
 
-type FileSpec = { path: string; content: string; mode: number; owner?: "user" }
+type FileSpec = { path: string; content: string | Uint8Array; mode: number; owner?: "user" }
 const file = (path: string, source: string, mode: number, owner?: "user"): FileSpec => ({
     path,
     content: fileText(source),
     mode,
     owner,
+})
+const binaryFile = (path: string, source: string, mode: number): FileSpec => ({
+    path,
+    content: Deno.readFileSync(new URL(`./board_files/${source}`, import.meta.url)),
+    mode,
 })
 const putAll = (files: FileSpec[]): Action[] => files.map((f) => ({ kind: "put", ...f }))
 const sys = (...argv: string[]): Action => ({ kind: "exec", argv })
@@ -1070,6 +1079,282 @@ const aosCameraCores: BoardStep = {
     ],
 }
 
+// ---------------------------------------------------------------------------------------------------- vendor fixes
+
+/** removes the files that are there (a daemon-reload after it sees them as changed) */
+const unput = (...paths: string[]): Action => ({
+    kind: "do",
+    text: `remove ${paths.join(", ")} (those that are there)`,
+    run: () => removeFiles(paths),
+})
+
+/**
+ * Files that change vendor units from their next start (a reboot, or a vendor_mode): never restarted here, since
+ * these units feed rl_deploy and an rl_deploy restart drops a standing robot. The revert removes them.
+ */
+function vendorFiles(id: string, board: BoardName, title: string, files: () => FileSpec[]): BoardStep {
+    return {
+        id,
+        board,
+        title,
+        root: true,
+        check: () => Promise.resolve({ todos: filesDiffer(files()) }),
+        actions: () => [...putAll(files()), daemonReload()],
+        revert: {
+            check: () => Promise.resolve(files().filter((f) => exists(f.path)).map((f) => `${f.path} is there`)),
+            actions: () => [unput(...files().map((f) => f.path)), daemonReload()],
+        },
+    }
+}
+
+const VENDOR_FIXES = "/opt/robot/vendor_fixes"
+const CPUSET_UNITS = ["lio_perception", "rsdriver", "yesense", "height_map_nav"]
+const CPUSET_FILES = () => [
+    file(`${VENDOR_FIXES}/in_cpuset.sh`, "aos/vendor_fixes/in_cpuset.sh", 0o755),
+    ...CPUSET_UNITS.map((unit) =>
+        file(
+            `/etc/systemd/system/${unit}.service.d/cpuset-6-7.conf`,
+            `aos/vendor_fixes/cpuset-${unit}.conf`,
+            0o644,
+        )
+    ),
+]
+// their launch scripts pin them to 4-7 (taskset), where they made rl_deploy's 1 kHz cycle on 4-5 run late; inside a
+// cgroup cpuset of 6-7 that taskset can only narrow them
+const aosVendorCpuset = vendorFiles(
+    "aos/vendor-cpuset",
+    "AOS",
+    `AOS: the vendor's lio_perception, rsdriver, yesense and height_map_nav on cores 6-7 only (a cgroup cpuset, ${VENDOR_FIXES}/in_cpuset.sh, in their drop-ins), off rl_deploy's real-time cores 4-5; from their next start`,
+    CPUSET_FILES,
+)
+
+const HIDE_TAILSCALE_FILES = () => [
+    binaryFile(`${VENDOR_FIXES}/hide_tailscale.so`, "aos/vendor_fixes/hide_tailscale.so", 0o755),
+    file(
+        "/etc/systemd/system/ctrlmcu.service.d/hide-tailscale.conf",
+        "aos/vendor_fixes/ctrlmcu-hide-tailscale.conf",
+        0o644,
+    ),
+]
+// ctrlmcu_node exits at start if any non-lo IPv4 address ends in .104 / .106, and AOS's tailscale0 can (100.x.y.106)
+const aosCtrlmcuHideTailscale = vendorFiles(
+    "aos/ctrlmcu-hide-tailscale",
+    "AOS",
+    `AOS: ctrlmcu (fans, LEDs, ext power) starts with Tailscale up (an LD_PRELOAD, ${VENDOR_FIXES}/hide_tailscale.so, hides tailscale0 from its .104/.106 IP guard); from its next start`,
+    HIDE_TAILSCALE_FILES,
+)
+
+const CTRLMCU_FRAMES_FILES = () => [
+    file("/etc/systemd/system/ctrlmcu.service.d/open-print.conf", "aos/vendor_fixes/ctrlmcu-open-print.conf", 0o644),
+    file("/etc/logrotate.d/ctrlmcu-frames", "aos/vendor_fixes/logrotate-ctrlmcu-frames", 0o644),
+    file("/etc/cron.hourly/ctrlmcu-frames", "aos/vendor_fixes/cron-hourly-ctrlmcu-frames", 0o755),
+]
+/** a debug aid, opt-in (not in setup): `m20tool setup-step aos/ctrlmcu-frames [--revert]` */
+const aosCtrlmcuFrames = vendorFiles(
+    "aos/ctrlmcu-frames",
+    "AOS",
+    "AOS (debug): ctrlmcu in its open-print mode, every MCU frame and reply in /var/opt/robot/data/ctrlmcu_frames/ctrlmcu.log (logrotate, 20 MB x 5, checked hourly); from its next start, the revert keeps the log",
+    CTRLMCU_FRAMES_FILES,
+)
+
+/** what a unit was before setup turned it off, one file each, for the revert */
+const beforeFile = (unit: string) => `/home/user/.local/state/m20tool/before-setup-${unit}`
+const unitEnabled = async (unit: string) => (await exec(["systemctl", "is-enabled", unit])).stdout
+
+/**
+ * A unit off for good: masked (`mask`) or disabled, and stopped. What it was before ("enabled active", ...) is saved
+ * on the board the first time, and the revert puts back exactly that; one that was off before setup has none to undo.
+ */
+function unitOff(
+    id: string,
+    board: BoardName,
+    unit: string,
+    title: string,
+    how: "mask" | "disable",
+    extra: { todos?: () => string[]; actions?: () => Action[] } = {},
+): BoardStep {
+    // not installed ("") counts as off: nothing to turn off
+    const isOff = (enabled: string) => how === "mask" ? ["masked", ""].includes(enabled) : enabled !== "enabled"
+    const needed = async () => !isOff(await unitEnabled(unit)) || (await active(unit))
+    return {
+        id,
+        board,
+        title,
+        root: true,
+        check: async () => {
+            const enabledNow = await unitEnabled(unit)
+            return {
+                todos: [
+                    ...(isOff(enabledNow) ? [] : [`${unit} is ${enabledNow}`]),
+                    ...((await active(unit)) ? [`${unit} is running`] : []),
+                    ...(extra.todos?.() ?? []),
+                ],
+                data: { live: await liveAnswers({ unitOff: needed }) },
+            }
+        },
+        actions: (p) => [
+            {
+                kind: "do",
+                text: `save what ${unit} is now (systemctl is-enabled / is-active) in ${
+                    beforeFile(unit)
+                }, for the revert (once, and only if it isn't off already)`,
+                run: async () => {
+                    if (!exists(beforeFile(unit)) && (await needed())) {
+                        const state = `${await unitEnabled(unit)} ${(await active(unit)) ? "active" : "inactive"}\n`
+                        put(beforeFile(unit), state, 0o644, "user")
+                    }
+                },
+            },
+            ...(extra.actions?.() ?? []),
+            onlyIf(p, "unitOff", needed, `${unit} is already ${how === "mask" ? "masked" : "disabled"} and stopped`, [
+                sys("systemctl", how, "--now", unit),
+            ]),
+        ],
+        revert: {
+            check: () => {
+                const saved = readText(beforeFile(unit))?.trim()
+                return Promise.resolve(saved ? [`${unit} was "${saved}" before setup turned it off`] : [])
+            },
+            actions: () => [{
+                kind: "do",
+                text: `${how === "mask" ? `systemctl unmask ${unit}, then ` : ""}systemctl enable / start ${unit} as ${
+                    beforeFile(unit)
+                } says it was, then remove that file`,
+                run: async () => {
+                    const [enabledBefore, activeBefore] = (readText(beforeFile(unit)) ?? "").trim().split(" ")
+                    if (!enabledBefore) {
+                        return
+                    }
+                    await perform([
+                        ...(how === "mask" ? [sys("systemctl", "unmask", unit)] : []),
+                        ...(enabledBefore === "enabled" ? [sys("systemctl", "enable", unit)] : []),
+                        ...(activeBefore === "active" ? [sys("systemctl", "start", unit)] : []),
+                    ], (line) => console.error(line))
+                    Deno.removeSync(at(beforeFile(unit)))
+                },
+            }],
+        },
+    }
+}
+
+// dimos's deploy/setup.sh masked it: NOS's rsdriver drives the lidar; this one on GOS only competed for it
+const RSDRIVER_LEFTOVERS = [
+    "/etc/systemd/system/rsdriver.service.d/10-dimos-shm-permissions.conf",
+    "/usr/local/libexec/dimos-m20-rsdriver-shm-permissions",
+    "/etc/systemd/system/dimos-m20-fastdds-permissions.path",
+    "/etc/systemd/system/dimos-m20-fastdds-permissions.service",
+]
+const gosRsdriver = unitOff(
+    "gos/rsdriver",
+    "GOS",
+    "rsdriver.service",
+    "GOS: the vendor's lidar driver on GOS (rsdriver.service) masked and stopped (NOS's drives the lidar), and an older dimos setup's shm-permission units removed",
+    "mask",
+    {
+        todos: () => stillThere(...RSDRIVER_LEFTOVERS),
+        actions: () => [
+            {
+                kind: "do",
+                text: "systemctl disable --now dimos-m20-fastdds-permissions.path / .service (those that are there)",
+                run: async () => {
+                    for (const unit of RSDRIVER_LEFTOVERS.filter((path) => /\.(path|service)$/.test(path))) {
+                        if (exists(unit)) {
+                            await exec(["systemctl", "disable", "--now", unit.split("/").pop()!])
+                        }
+                    }
+                },
+            },
+            unput(...RSDRIVER_LEFTOVERS),
+            daemonReload(),
+        ],
+    },
+)
+
+// the cameras run under the dimos Hosts with `dimos run m20` now; this unit holds /dev/video0 and /dev/video2
+const aosOldCamera = unitOff(
+    "aos/old-camera",
+    "AOS",
+    "m20-camera.service",
+    "AOS: the old standalone camera relay (m20-camera.service) disabled and stopped: it holds the cameras, which `dimos run m20` runs under its Hosts now (its files stay, for the revert)",
+    "disable",
+)
+
+/** dimos's old chrony clock sync out of chrony.conf (chrony.ts); chrony restarted only if it runs and that changed */
+function chrony(board: BoardName): BoardStep {
+    const text = () => readText(CHRONY_CONF) ?? ""
+    const restart = (p: Params, before: () => string) =>
+        onlyIf(
+            p,
+            "chronyRestart",
+            async () => effectiveLines(before()) !== effectiveLines(text()) && (await active("chrony.service")),
+            "chrony isn't running, or the lines it reads didn't change",
+            [sys("systemctl", "restart", "chrony.service")],
+        )
+    return {
+        id: `${board.toLowerCase()}/chrony`,
+        board,
+        title:
+            `${board}: dimos's old chrony clock sync out of ${CHRONY_CONF} (its dimos-m20-clock blocks removed, the stock pools it commented out back; the boards' clock is PTP)`,
+        root: true,
+        check: async () => ({
+            todos: withoutDimosClock(text()) === text()
+                ? []
+                : [`${CHRONY_CONF} has a dimos-m20-clock block or #dimos-disabled lines`],
+            data: {
+                live: {
+                    chronyRestart: effectiveLines(withoutDimosClock(text())) !== effectiveLines(text()) &&
+                        (await active("chrony.service")),
+                },
+            },
+        }),
+        actions: (p) => {
+            let before = ""
+            return [
+                {
+                    kind: "do",
+                    text:
+                        `keep ${CHRONY_CONF} as ${CHRONY_ORIGINAL} (the first time), then drop its "# dimos-m20-clock[-master] BEGIN" ... "END" blocks and the "#dimos-disabled " in front of its pools`,
+                    run: () => {
+                        before = text()
+                        const after = withoutDimosClock(before)
+                        if (after !== before) {
+                            if (!exists(CHRONY_ORIGINAL)) {
+                                Deno.copyFileSync(at(CHRONY_CONF), at(CHRONY_ORIGINAL))
+                            }
+                            put(CHRONY_CONF, after, Deno.statSync(at(CHRONY_CONF)).mode! & 0o777)
+                        }
+                    },
+                },
+                restart(p, () => before),
+            ]
+        },
+        revert: {
+            check: () => Promise.resolve(exists(CHRONY_ORIGINAL) ? [`${CHRONY_ORIGINAL} is there to put back`] : []),
+            actions: (p) => {
+                let before = ""
+                return [
+                    {
+                        kind: "do",
+                        text: `put ${CHRONY_ORIGINAL} back as ${CHRONY_CONF}, then remove it`,
+                        run: () => {
+                            before = text()
+                            if (exists(CHRONY_ORIGINAL)) {
+                                put(
+                                    CHRONY_CONF,
+                                    readText(CHRONY_ORIGINAL)!,
+                                    Deno.statSync(at(CHRONY_CONF)).mode! & 0o777,
+                                )
+                                Deno.removeSync(at(CHRONY_ORIGINAL))
+                            }
+                        },
+                    },
+                    restart(p, () => before),
+                ]
+            },
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------- queries
 
 const query = (id: string, board: BoardName, root: boolean, run: (p: Params) => Promise<CheckResult>): BoardStep => ({
@@ -1102,6 +1387,13 @@ export const STEPS: BoardStep[] = [
     bands,
     gosAllCores,
     aosCameraCores,
+    chrony("GOS"),
+    chrony("AOS"),
+    gosRsdriver,
+    aosOldCamera,
+    aosVendorCpuset,
+    aosCtrlmcuHideTailscale,
+    aosCtrlmcuFrames,
     wifi,
     aosUplink,
     dropRoute,

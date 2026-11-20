@@ -1,5 +1,6 @@
 // `m20tool board-step ...`: what setup runs on a board over ssh (hidden from --help).
 //   board-step <id> check|apply      parameters as JSON on stdin; prints one result line "M20TOOL <json>" on stdout
+//   board-step <id> revert-check|revert   the same for undoing a step that has a revert (todos = what's left to undo)
 //   board-step tailscale-up GOS|AOS  `tailscale up` with the terminal attached (its login link)
 //   board-step receive <path>        stdin -> <path> (mode 600): how setup uploads files once m20tool is there
 //   board-step cleanup               a temporary copy of m20tool (in /tmp) deletes itself
@@ -87,7 +88,8 @@ export async function boardStep(args: string[]): Promise<number> {
             .output()).code
     }
     const step = stepById(id)
-    if (!step || !["check", "apply"].includes(mode)) {
+    const reverting = mode === "revert" || mode === "revert-check"
+    if (!step || !["check", "apply", "revert-check", "revert"].includes(mode) || (reverting && !step.revert)) {
         console.error(`board-step: unknown step or mode: ${id} ${mode}`)
         return 2
     }
@@ -107,7 +109,10 @@ export async function boardStep(args: string[]): Promise<number> {
         if (mode === "apply") {
             await perform(step.actions(params), (line) => console.error(line))
         }
-        print(await step.check(params))
+        if (mode === "revert") {
+            await perform(step.revert!.actions(params), (line) => console.error(line))
+        }
+        print(reverting ? { todos: await step.revert!.check(params) } : await step.check(params))
         return 0
     } catch (error) {
         print({ error: (error as Error).message })
@@ -117,3 +122,5 @@ export async function boardStep(args: string[]): Promise<number> {
 
 /** a step's plan, as setup prints it (secrets masked) */
 export const planLines = (id: string, params: Params) => stepById(id)!.actions(params).map(describe)
+/** the same for its revert */
+export const revertPlanLines = (id: string, params: Params) => stepById(id)!.revert!.actions(params).map(describe)

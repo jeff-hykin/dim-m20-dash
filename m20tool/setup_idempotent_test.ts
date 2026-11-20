@@ -17,10 +17,12 @@ const FAKES: Record<string, string> = {
 S=$FAKE_STATE; mkdir -p $S/enabled $S/active
 args=("$@"); [ "$1" = "-q" ] && shift
 case "$1" in
-  is-enabled) echo "R systemctl $*" >> $FAKE_LOG; [ -e "$S/enabled/$2" ] && { echo enabled; exit 0; }; echo disabled; exit 1 ;;
+  is-enabled) echo "R systemctl $*" >> $FAKE_LOG; [ -e "$S/masked/$2" ] && { echo masked; exit 1; }; [ -e "$S/enabled/$2" ] && { echo enabled; exit 0; }; echo disabled; exit 1 ;;
   is-active) echo "R systemctl $*" >> $FAKE_LOG; u="\${@: -1}"; [ -e "$S/active/$u" ] && exit 0; exit 3 ;;
   enable) echo "W systemctl $*" >> $FAKE_LOG; shift; now=""; [ "$1" = "--now" ] && { now=1; shift; }; touch "$S/enabled/$1"; [ -n "$now" ] && touch "$S/active/$1" ;;
   disable) echo "W systemctl $*" >> $FAKE_LOG; shift; [ "$1" = "--now" ] && shift; rm -f "$S/enabled/$1" "$S/active/$1" ;;
+  mask) echo "W systemctl $*" >> $FAKE_LOG; shift; [ "$1" = "--now" ] && shift; mkdir -p $S/masked; touch "$S/masked/$1"; rm -f "$S/active/$1" ;;
+  stop) echo "W systemctl $*" >> $FAKE_LOG; rm -f "$S/active/$2" ;;
   start|restart) echo "W systemctl $*" >> $FAKE_LOG; touch "$S/active/$2"
     [ "$2" = aos-uplink.service ] && touch $S/route_aos
     if [ "$2" = network-safety ] || [ "$2" = network-safety.service ]; then
@@ -131,6 +133,16 @@ function makeBoard(name: "GOS" | "AOS", dir: string): Board {
     if (name === "GOS") {
         fakeBootAndDesktop(root)
     }
+    // dimos's old clock blocks (the live dog's chrony.conf), GOS's vendor lidar driver and AOS's old camera relay running
+    Deno.mkdirSync(`${root}/etc/chrony`, { recursive: true })
+    Deno.copyFileSync(
+        new URL(`./test_fixtures/chrony/${name.toLowerCase()}.conf`, import.meta.url),
+        `${root}/etc/chrony/chrony.conf`,
+    )
+    for (const kind of ["enabled", "active"]) {
+        Deno.mkdirSync(`${board.state}/${kind}`, { recursive: true })
+        Deno.writeTextFileSync(`${board.state}/${kind}/${name === "GOS" ? "rsdriver" : "m20-camera"}.service`, "")
+    }
     return board
 }
 
@@ -240,6 +252,12 @@ Deno.test({
                     "aos/deno",
                     (t) => ({ upload: t.length ? upload(aos, `${dir}/deno-upload`, "deno") : undefined }),
                 ],
+                [gos, "gos/chrony", () => ({})],
+                [aos, "aos/chrony", () => ({})],
+                [gos, "gos/rsdriver", () => ({})],
+                [aos, "aos/old-camera", () => ({})],
+                [aos, "aos/vendor-cpuset", () => ({})],
+                [aos, "aos/ctrlmcu-hide-tailscale", () => ({})],
                 [gos, "gos/usb-ethernet", () => ({ onCable: false })],
                 [aos, "aos/route", () => ({})],
                 [gos, "gos/time", () => ({})],

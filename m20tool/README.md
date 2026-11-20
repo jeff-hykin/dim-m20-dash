@@ -15,22 +15,23 @@ direct cable.
 
 ## Commands
 
-| Command                              | What                                                                                                                                                                                                     |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `m20tool help`                       | boards, addresses, passwords, ways in, AP mode vs Wi-Fi                                                                                                                                                  |
-| `m20tool setup [--dry-run]`          | set a dog up from a laptop (below); asks for the Wi-Fi to join first                                                                                                                                     |
-| `m20tool install-on-dog [--dry-run]` | install this m20tool and the docs on GOS and AOS                                                                                                                                                         |
-| `m20tool status`                     | motion state, gait, usage mode, charge, battery, errors (read-only)                                                                                                                                      |
-| `m20tool battery`                    | both battery packs and the charge state (read-only)                                                                                                                                                      |
-| `m20tool stand`                      | ready for dimos: Stand, RL Control, navigation mode, agile stairs gait                                                                                                                                   |
-| `m20tool direct`                     | ready for axis driving: Stand, RL Control, regular mode, Basic gait                                                                                                                                      |
-| `m20tool lie_down`                   | zero velocity, then Sit                                                                                                                                                                                  |
-| `m20tool dock`                       | start autonomous charging (standing ~2 m in front of the dock, facing both reflectors); returns once the robot took it, a background copy watches it (log `~/m20_dock.log`; `--foreground` watches here) |
-| `m20tool undock`                     | leave the dock, then stand                                                                                                                                                                               |
-| `m20tool stop`                       | zero velocity (regular mode only; in navigation mode use `lie_down`)                                                                                                                                     |
-| `m20tool mode`                       | vendor mode, rust mode or mixed: each vendor DrDDS unit on GOS, AOS and NOS, enabled/masked, running (read-only)                                                                                         |
-| `m20tool rust_mode [--dry-run]`      | every vendor DrDDS service disabled, masked and stopped, at boot too: only dimos runs (below)                                                                                                            |
-| `m20tool vendor_mode [--dry-run]`    | the vendor services back as they were (unmask, enable, start)                                                                                                                                            |
+| Command                                            | What                                                                                                                                                                                                     |
+| -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `m20tool help`                                     | boards, addresses, passwords, ways in, AP mode vs Wi-Fi                                                                                                                                                  |
+| `m20tool setup [--dry-run]`                        | set a dog up from a laptop (below); asks for the Wi-Fi to join first                                                                                                                                     |
+| `m20tool install-on-dog [--dry-run]`               | install this m20tool and the docs on GOS and AOS                                                                                                                                                         |
+| `m20tool setup-step [<id>] [--revert] [--dry-run]` | one setup step on its own (check first), or undo it; no id lists them (below)                                                                                                                            |
+| `m20tool status`                                   | motion state, gait, usage mode, charge, battery, errors (read-only)                                                                                                                                      |
+| `m20tool battery`                                  | both battery packs and the charge state (read-only)                                                                                                                                                      |
+| `m20tool stand`                                    | ready for dimos: Stand, RL Control, navigation mode, agile stairs gait                                                                                                                                   |
+| `m20tool direct`                                   | ready for axis driving: Stand, RL Control, regular mode, Basic gait                                                                                                                                      |
+| `m20tool lie_down`                                 | zero velocity, then Sit                                                                                                                                                                                  |
+| `m20tool dock`                                     | start autonomous charging (standing ~2 m in front of the dock, facing both reflectors); returns once the robot took it, a background copy watches it (log `~/m20_dock.log`; `--foreground` watches here) |
+| `m20tool undock`                                   | leave the dock, then stand                                                                                                                                                                               |
+| `m20tool stop`                                     | zero velocity (regular mode only; in navigation mode use `lie_down`)                                                                                                                                     |
+| `m20tool mode`                                     | vendor mode, rust mode or mixed: each vendor DrDDS unit on GOS, AOS and NOS, enabled/masked, running (read-only)                                                                                         |
+| `m20tool rust_mode [--dry-run]`                    | every vendor DrDDS service disabled, masked and stopped, at boot too: only dimos runs (below)                                                                                                            |
+| `m20tool vendor_mode [--dry-run]`                  | the vendor services back as they were (unmask, enable, start)                                                                                                                                            |
 
 The robot commands talk to the vendor's basic_server on AOS (UDP 10.21.31.103:30000, TCP 30001 for the usage mode),
 through `../backend/basic_server.ts`, the same protocol code M20 Ctrl uses. On GOS and AOS they need no arguments. On a
@@ -72,10 +73,11 @@ every step with the commands it would run.
 1. Asks for the Wi-Fi network (SSID, password) the dog should join. Empty: leave its Wi-Fi alone.
 2. **Phase 1**, over any way in (the dog's hotspot `CA9B_NO.<n>_5G` / `12345678` with a route to 10.21.31.0/24 via
    10.21.41.1, Tailscale, the rear Ethernet port): this computer's ssh key (made if missing) onto GOS, AOS and NOS (it
-   does the `ssh-copy-id` itself, with the board password), docs on GOS and AOS for people and agents (below), then the
-   USB-Ethernet fallback on GOS (r8152 blacklisted, the RTL8153 adapter runs as cdc_ether at a fixed 192.168.3.2 plus
-   DHCP, NAT for the other boards). Then it stops and asks for the direct cable: a USB-C to Ethernet adapter in GOS's
-   USB-C port, on the side of the dog WITHOUT the battery slots, cabled to this computer.
+   does the `ssh-copy-id` itself, with the board password), docs on GOS and AOS for people and agents (below), the
+   robot's own services ([below](#the-robots-own-services)), then the USB-Ethernet fallback on GOS (r8152 blacklisted,
+   the RTL8153 adapter runs as cdc_ether at a fixed 192.168.3.2 plus DHCP, NAT for the other boards). Then it stops and
+   asks for the direct cable: a USB-C to Ethernet adapter in GOS's USB-C port, on the side of the dog WITHOUT the
+   battery slots, cabled to this computer.
 3. **Phase 2**, rerun over the cable (this computer gets 192.168.3.1 on it until it reboots):
    - internet for the dog: this computer's, NATed (macOS pf anchor `com.apple/m20`; Linux iptables, else nft; until
      reboot); skipped when GOS already has internet. AOS gets a route via GOS for the rest of setup (removed at the
@@ -93,8 +95,6 @@ every step with the commands it would run.
    - GOS on all 8 cores: `isolcpus=4,5,6,7` blanked (same-length spaces, a backup kept) in the boot device tree that
      `extlinux.conf`'s `fdt` names, from the next reboot (setup never reboots), and no `CPUAffinity` in Desktop's
      drop-ins (one pinned all of dimos to the isolated cores, where it piled onto core 4).
-   - AOS's camera relay on big cores 6-7 (`m20-camera.service.d/big-cores.conf`): AOS keeps its `isolcpus` (the vendor
-     pins its lidar, IMU and SLAM there), and on the small cores the front camera couldn't hold 30 fps.
    - joins the Wi-Fi from step 1: saved with autoconnect off (network-safety alone decides), network-safety restarted
      into Wi-Fi mode, then it waits for wlan0 to be on it and pings over wlan0.
    - GOS's uplink through AOS's Wi-Fi (`aos-uplink`), once AOS has internet.
@@ -113,6 +113,26 @@ already there) stays.
 
 The files it puts on the boards are in `board_files/` (copied from the dog set up by hand in Nov 2026). Changed files
 are backed up as `<file>.bak-m20tool-<time>` first.
+
+## The robot's own services
+
+Setup's phase 1 also does what dimos's `deploy/setup.sh` and `onboard/vendor_fixes` did by hand (both left dimos in Nov
+2026). Each is a step `m20tool setup-step <id>` runs on its own and `m20tool setup-step <id> --revert` undoes (also
+idempotent; `--dry-run` shows the commands). None restarts a vendor unit: what changes a unit's start takes effect at
+its next start (a reboot, `vendor_mode`), since these units feed rl_deploy and restarting it drops a standing robot.
+
+| Step                                     | What                                                                                                                                                                                                                                                                                                                       | Revert                                                                                                                                         |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gos/chrony`, `aos/chrony`, `nos/chrony` | dimos's old chrony clock sync out of `/etc/chrony/chrony.conf`: the `# dimos-m20-clock[-master] BEGIN/END` blocks removed, the `#dimos-disabled` pools back (the clock is PTP: ptp4l + phc2sys). chrony restarts only if it runs and its non-comment lines changed. NOS has no m20tool: plain sh + sed there (`chrony.ts`) | `chrony.conf.orig-before-m20tool` put back                                                                                                     |
+| `gos/rsdriver`                           | GOS's vendor lidar driver masked and stopped (NOS's drives the lidar), and an older dimos setup's `dimos-m20-fastdds-permissions` / shm-permission files removed                                                                                                                                                           | unmask, then enable / start as it was (saved in `~/.local/state/m20tool/before-setup-rsdriver.service`); nothing if it was masked before setup |
+| `aos/old-camera`                         | the old standalone camera relay `m20-camera.service` disabled and stopped (it holds /dev/video0 and /dev/video2; `dimos run m20` runs the cameras under its Hosts); its files stay                                                                                                                                         | enable / start as it was (`aos/camera-cores` pins it to cores 6-7 again)                                                                       |
+| `aos/vendor-cpuset`                      | lio_perception, rsdriver, yesense and height_map_nav in a cgroup cpuset of cores 6-7 (`/opt/robot/vendor_fixes/in_cpuset.sh` in `<unit>.service.d/cpuset-6-7.conf`): their scripts pin them to 4-7, where they made rl_deploy's 1 kHz cycle on 4-5 run late                                                                | the drop-ins and the script removed                                                                                                            |
+| `aos/ctrlmcu-hide-tailscale`             | ctrlmcu with `LD_PRELOAD=/opt/robot/vendor_fixes/hide_tailscale.so` (`ctrlmcu.service.d/hide-tailscale.conf`): its IP guard exits on any .104/.106 address, which tailscale0 can be. The .so is committed, built on a laptop (`board_files/aos/vendor_fixes/build_hide_tailscale.sh`, zig)                                 | the drop-in and the .so removed                                                                                                                |
+| `aos/ctrlmcu-frames`                     | **opt-in, not in setup** (a debug aid): ctrlmcu in its `open-print` mode, every MCU frame in `/var/opt/robot/data/ctrlmcu_frames/ctrlmcu.log`, logrotate (20 MB x 5) checked hourly                                                                                                                                        | the drop-in, logrotate rule and cron job removed; the log stays                                                                                |
+
+`m20tool rust_mode` / `vendor_mode` (above) switch the vendor DrDDS services themselves; its unit list is the one
+dimos's rust-mode test (`onboard/rust_mode_test/rust_mode_test.sh`) stopped, plus ctrlmcu (the test left it alone only
+because it crash-looped without `aos/ctrlmcu-hide-tailscale`).
 
 ## System commands it runs
 
@@ -134,6 +154,10 @@ Over ssh, before m20tool runs on a board: `/usr/local/bin/m20tool --version`, an
 upload of a temporary copy (`umask 077; cat > /tmp/m20tool-run-<id>; chmod 700 /tmp/m20tool-run-<id>`), which runs every
 step and deletes itself at the end (`board-step cleanup`). NOS gets only the key, in plain shell (`mkdir`, `grep`).
 
+On NOS, for `nos/chrony` (no m20tool there): `sudo -S sh -c` with `grep`, `cp -p`, `sed`, `cat`, `rm`,
+`systemctl
+is-active` / `restart chrony`.
+
 On GOS and AOS, inside m20tool (`board-step`): `sudo` (root steps re-run themselves under `sudo -S`), `systemctl`,
 `udevadm`, `rmmod`, `ip`, `resolvectl`, `iptables -C` (check only), `nmcli`, `iw list`, `ping -I wlan0`, `ssh-keygen`
 (AOS's root key, once), `tailscale`, the dog's own `/usr/local/bin/office-nat`, and `/usr/local/bin/m20tool --version`.
@@ -146,7 +170,9 @@ phc2sys`), network-safety (`nmcli`, `iw`, `tailscale`, the vendor's `ap_start.sh
 ## Develop
 
 - `deno task m20tool <args>` runs it from source; `deno task test` includes `m20tool/robot_test.ts` (every robot command
-  against a stand-in basic_server, no robot) and `m20tool/modes_test.ts` (rust_mode / vendor_mode against three fake
-  boards' systemd: order, persistence, idempotence, the robot check).
+  against a stand-in basic_server, no robot), `m20tool/modes_test.ts` (rust_mode / vendor_mode against three fake
+  boards' systemd: order, persistence, idempotence, the robot check) and `m20tool/vendor_setup_test.ts` (the robot's own
+  steps and their reverts against fake boards; chrony against the live dog's three chrony.conf files, the Deno edit and
+  NOS's sh giving the same file).
 - `deno task m20tool-build` compiles all four targets into `m20tool/dist/`; `deno run -A m20tool/build.ts --release`
   also uploads them to the GitHub release `m20tool-v<VERSION>` (version: `dog.ts`, `install.sh`).

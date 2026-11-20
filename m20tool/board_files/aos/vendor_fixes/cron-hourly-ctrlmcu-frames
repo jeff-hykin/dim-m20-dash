@@ -1,0 +1,3 @@
+#!/bin/sh
+# Rotates the ctrlmcu frame log when it passes its size cap (the daily logrotate timer alone is too slow for a burst).
+exec /usr/sbin/logrotate /etc/logrotate.d/ctrlmcu-frames

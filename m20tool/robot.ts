@@ -613,7 +613,9 @@ export async function restartAosService(service: AosService, dryRun: boolean, ou
     const shown = (await run(aos, check, { timeoutSeconds: 20 })).stdout
     const state = Object.fromEntries(shown.split("\n").map((line) => line.split("=", 2)))
     if (state.ActiveState !== "active") {
-        throw new Fail(`restarted ${unit} on AOS, but it is ${state.ActiveState ?? "unknown"} (${state.SubState ?? "?"})`)
+        throw new Fail(
+            `restarted ${unit} on AOS, but it is ${state.ActiveState ?? "unknown"} (${state.SubState ?? "?"})`,
+        )
     }
     out(`${unit} on AOS restarted: ${state.SubState} since ${state.ActiveEnterTimestamp}`)
 }

@@ -1,14 +1,16 @@
 // `m20tool setup`: set a dog up from a laptop, in two phases, every step idempotent. Each step has a read-only check
 // (all --dry-run runs, so a dry run against a set-up dog reports "done" everywhere) and an apply.
 //   Phase 1 (any way in: the dog's hotspot, Tailscale, ...): ssh keys, m20tool itself on GOS and AOS (every later
-//     step runs inside it, steps.ts), docs for people and agents, then the USB-Ethernet fallback on GOS. Then it stops
-//     and asks for the direct cable.
+//     step runs inside it, steps.ts), docs for people and agents, the robot's own services (vendor units and files,
+//     ROBOT_STEPS; each one also undone on its own by `m20tool setup-step <id> --revert`), then the USB-Ethernet
+//     fallback on GOS. Then it stops and asks for the direct cable.
 //   Phase 2 (over the direct cable, so a Wi-Fi change can't cut us off): internet for the dog through the laptop,
 //     the clock, the vendor's hotspot babysitter off, network-safety, the DDS firewall, Tailscale, both Wi-Fi bands,
 //     joining the Wi-Fi asked for at the start, and GOS's uplink through AOS.
 import { $ } from "dax"
 import {
     AOS_IP,
+    BOARD_PASSWORD,
     CABLE_INSTRUCTIONS,
     GOS_CABLE_IP,
     GOS_IP,
@@ -33,8 +35,10 @@ import {
 import { boardBinary, networkSafetyBinary } from "./install.ts"
 import { denoForBoard, tailscaleForBoard } from "./downloads.ts"
 import { redact, registerSecret } from "./scripts.ts"
-import { planLines } from "./board_step.ts"
+import { planLines, revertPlanLines } from "./board_step.ts"
 import type { Params } from "./board.ts"
+import { stepById } from "./steps.ts"
+import { CHRONY_CONF, nosChronyShell } from "./chrony.ts"
 
 export type SetupOptions = {
     dryRun: boolean
@@ -54,6 +58,8 @@ export type Step = {
     /** what apply does, for --dry-run */
     plan: () => string[]
     apply: () => Promise<void>
+    /** undoing it (`m20tool setup-step <id> --revert`): its check = nothing left to undo */
+    revert?: Step
 }
 
 const HOME = Deno.env.get("HOME") ?? "."
@@ -273,9 +279,25 @@ function boardStepOf(
     // what the check found live (which guarded restarts/re-runs are needed), for the plan and the apply
     let live: Record<string, boolean> | undefined
     const withLive = () => ({ ...params(), live })
+    const revert: Step | undefined = stepById(id)?.revert && {
+        title: `undo: ${title}`,
+        where: board.name,
+        check: async () => {
+            const result = await boardStep(board, id, "revert-check", params())
+            return { done: !result.todos.length, detail: result.todos.join("; ") }
+        },
+        plan: () => [
+            `on ${board.name} (${describe(board)}), inside m20tool (board-step ${id} revert):`,
+            ...revertPlanLines(id, params()).map((line) => `  | ${line}`),
+        ],
+        apply: async () => {
+            await boardStep(board, id, "revert", params())
+        },
+    }
     return {
         title,
         where: board.name,
+        revert,
         check: async () => {
             const result = await boardStep(board, id, "check", params())
             live = (result.data as { live?: Record<string, boolean> } | undefined)?.live
@@ -583,6 +605,129 @@ function gosUplinkSteps(dog: Dog): Step[] {
     ]
 }
 
+// ---------------------------------------------------------------------------------------------------- the robot's own (vendor) setup
+
+/** NOS has no m20tool: chrony.ts's edit in plain sh over ssh (root through sudo, its password on stdin) */
+function nosChronyStep(nos: Board): Step {
+    const sh = async (mode: Parameters<typeof nosChronyShell>[0]) => {
+        nos.password = !(await keyWorks(nos))
+        const command = nosChronyShell(mode)
+        const root = mode === "apply" || mode === "revert"
+        const result = await run(
+            nos,
+            root ? `sudo -S -p '' sh -c '${command.replaceAll("'", "'\\''")}'` : command,
+            { stdinText: root ? `${BOARD_PASSWORD}\n` : undefined, timeoutSeconds: 60 },
+        )
+        if (result.code === 255) {
+            return "unreachable"
+        }
+        if (result.code !== 0) {
+            throw new Error(`NOS: ${result.stderr || result.stdout || `exit ${result.code}`}`)
+        }
+        return result.stdout.includes("todo") ? "todo" : "done"
+    }
+    const step = (title: string, check: "check" | "revert-check", apply: "apply" | "revert", todo: string): Step => ({
+        title,
+        where: "NOS",
+        check: async () => {
+            const found = await sh(check)
+            // optional, like NOS's key: NOS can be unreachable from here
+            return found === "unreachable"
+                ? { done: true, skip: true, detail: `NOS (${describe(nos)}) isn't reachable over ssh` }
+                : { done: found === "done", detail: found === "todo" ? todo : "" }
+        },
+        plan: () => [`ssh ${describe(nos)}, as root (sudo): ${nosChronyShell(apply)}`],
+        apply: async () => {
+            await sh(apply)
+        },
+    })
+    return {
+        ...step(
+            `NOS: dimos's old chrony clock sync out of ${CHRONY_CONF} (its dimos-m20-clock block removed, the pools it commented out back; NOS gets no m20tool, so plain sh)`,
+            "check",
+            "apply",
+            `${CHRONY_CONF} has a dimos-m20-clock block or #dimos-disabled lines`,
+        ),
+        revert: step(
+            `undo: NOS's ${CHRONY_CONF} back as it was`,
+            "revert-check",
+            "revert",
+            `${CHRONY_CONF}.orig-before-m20tool is there to put back`,
+        ),
+    }
+}
+
+const boardOf = (dog: Dog, id: string) => id.startsWith("gos/") ? dog.gos : id.startsWith("aos/") ? dog.aos : dog.nos
+
+/** the robot-level steps setup runs (vendor units and files; no networking), in order */
+const ROBOT_STEPS = [
+    "gos/chrony",
+    "aos/chrony",
+    "nos/chrony",
+    "gos/rsdriver",
+    "aos/old-camera",
+    "aos/vendor-cpuset",
+    "aos/ctrlmcu-hide-tailscale",
+]
+/** what `m20tool setup-step` runs on its own: those, the opt-in ones (never in setup), and the core pinning */
+export const SETUP_STEPS: { id: string; optIn?: boolean }[] = [
+    ...ROBOT_STEPS.map((id) => ({ id })),
+    { id: "aos/ctrlmcu-frames", optIn: true },
+    { id: "gos/all-cores" },
+    { id: "aos/camera-cores" },
+]
+export const setupStepTitle = (id: string) =>
+    id === "nos/chrony" ? `NOS: dimos's old chrony clock sync out of ${CHRONY_CONF}` : stepById(id)?.title ?? id
+
+function namedStep(dog: Dog, id: string): Step {
+    return id === "nos/chrony"
+        ? nosChronyStep(dog.nos)
+        : boardStepOf(boardOf(dog, id), id, stepById(id)!.title, () => ({}))
+}
+
+/** `m20tool setup-step <id> [--revert]`: one step (or its undo), checked first like setup; no id lists them */
+export async function setupStep(
+    id: string | undefined,
+    options: Pick<SetupOptions, "gos" | "aos" | "dryRun"> & { revert: boolean },
+): Promise<number> {
+    const known = SETUP_STEPS.find((s) => s.id === id)
+    if (!known) {
+        if (id) {
+            console.error(`no setup step "${id}"`)
+        }
+        console.log("setup steps (m20tool setup-step <id> [--revert] [--dry-run]):")
+        for (const s of SETUP_STEPS) {
+            const revertable = s.id === "nos/chrony" || !!stepById(s.id)?.revert
+            console.log(
+                `  ${s.id.padEnd(28)} ${s.optIn ? "(opt-in, not in setup) " : ""}${revertable ? "" : "(no revert) "}${
+                    setupStepTitle(s.id)
+                }`,
+            )
+        }
+        return id ? 2 : 0
+    }
+    const dog = await findDog(options)
+    if (!dog) {
+        console.error("can't reach GOS: see m20tool help")
+        return 1
+    }
+    try {
+        await prepare(dog)
+        const step = namedStep(dog, known.id)
+        const chosen = options.revert ? step.revert : step
+        if (!chosen) {
+            console.error(`${known.id} has no revert`)
+            return 2
+        }
+        if (options.dryRun) {
+            console.log("DRY RUN: only read-only checks run; every change is printed, none is made.\n")
+        }
+        return (await runStep(chosen, options.dryRun)) ? 0 : 1
+    } finally {
+        await cleanupRunners()
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------- running it
 
 export async function runStep(step: Step, dryRun: boolean): Promise<boolean> {
@@ -740,7 +885,7 @@ async function stages(options: SetupOptions, ssid: string, password: string) {
         )
     }
 
-    console.log("\n== Phase 1 (any way in): keys, m20tool, docs, then the direct-cable fallback")
+    console.log("\n== Phase 1 (any way in): keys, m20tool, docs, the robot's own fixes, then the direct-cable fallback")
     const phase1 = [
         keyStep(dog.gos, pubkey),
         keyStep(dog.aos, pubkey),
@@ -748,6 +893,7 @@ async function stages(options: SetupOptions, ssid: string, password: string) {
         ...installSteps(dog),
         denoStep(dog.gos),
         denoStep(dog.aos),
+        ...ROBOT_STEPS.map((id) => namedStep(dog, id)),
         boardStepOf(
             dog.gos,
             "gos/usb-ethernet",
@@ -825,7 +971,6 @@ async function stages(options: SetupOptions, ssid: string, password: string) {
             "GOS: dimos balanced over all 8 cores (isolcpus out of the boot device tree, from the next reboot; no CPUAffinity in Desktop's drop-ins)",
             () => ({}),
         ),
-        boardStepOf(dog.aos, "aos/camera-cores", "AOS: the camera relay (m20-camera) on big cores 6-7", () => ({})),
         ...(ssid ? wifiSteps(dog, ssid, password) : []),
         ...gosUplinkSteps(dog),
     ]

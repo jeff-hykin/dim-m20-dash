@@ -163,17 +163,18 @@ export async function cleanupRunners() {
 export async function boardStep(
     board: Board,
     id: string,
-    mode: "check" | "apply",
+    mode: "check" | "apply" | "revert-check" | "revert",
     params: Params,
 ): Promise<CheckResult> {
+    const changes = mode === "apply" || mode === "revert"
     const result = await run(board, `${board.runner} board-step ${id} ${mode}`, {
         stdinText: JSON.stringify(params),
-        timeoutSeconds: mode === "apply" ? 900 : 120,
+        timeoutSeconds: changes ? 900 : 120,
     })
     if (result.code === 255) {
         throw new Error(`can't reach ${board.name} (${describe(board)}): ${result.stderr}`)
     }
-    if (mode === "apply" && result.stderr) {
+    if (changes && result.stderr) {
         console.log(result.stderr.replace(/^/gm, "    "))
     }
     const line = result.stdout.split("\n").reverse().find((l) => l.startsWith(RESULT_PREFIX))
