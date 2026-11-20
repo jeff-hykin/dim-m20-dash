@@ -627,7 +627,7 @@ export function installSteps(dog: Dog): Step[] {
             boardStepOf(
                 board,
                 `${name}/self-install`,
-                `${board.name}: m20tool (/usr/local/bin/m20tool; ~/.local/bin/m20 runs it, for M20 Ctrl and the Controller)`,
+                `${board.name}: m20tool (/usr/local/bin/m20tool)`,
                 () => ({}),
             ),
             boardStepOf(

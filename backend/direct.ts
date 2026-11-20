@@ -3,10 +3,10 @@
 //
 // The two ways to drive need the robot in different usage modes:
 //   blueprint mode: the page publishes tele_cmd_vel; m20-nav's bridge hands it to the robot's navigation path, which the
-//     robot follows only in NAVIGATION usage mode (1) and RL control (17). The fix is `m20 stand` (the CLI: stand, RL
+//     robot follows only in NAVIGATION usage mode (1) and RL control (17). The fix is `m20tool stand` (the CLI: stand, RL
 //     control, navigation mode, agile stairs gait; it refuses on the dock).
 //   direct mode: axis commands (2/21, X/Y/Yaw as -1..1 of the robot's top speed) at 20 Hz, which the robot follows only
-//     in REGULAR usage mode (0), standing (1) or in RL control (17). The fix is `m20 direct` (stand, RL control,
+//     in REGULAR usage mode (0), standing (1) or in RL control (17). The fix is `m20tool direct` (stand, RL control,
 //     regular mode, basic gait).
 // The robot resets its usage mode to regular on every stand and undock, so the CLI sets the mode after standing.
 // Direct driving has its own deadman: a move holds for at most MOVE_HOLD_MAX_MS unless renewed (the page renews it every
@@ -36,7 +36,7 @@ const USAGE_NAVIGATION = 1
 /** charging states the robot refuses to stand from (entering, charging, leaving, on the dock) */
 const CHARGE_BUSY = new Set([1, 2, 3, 5])
 
-/** the gait each mode's Enable driving ends in: Basic for direct, agile stairs for the blueprint (what `m20 stand` and
+/** the gait each mode's Enable driving ends in: Basic for direct, agile stairs for the blueprint (what `m20tool stand` and
  * dimos use) */
 export const GAIT_BASIC = 0x1001
 export const GAIT_AGILE_STAIRS = 0x3003
@@ -237,8 +237,8 @@ export class Direct {
         const cli = this.cli()
         const plan = [`${cli} ${action}`]
         if (this.robot.state.source === "fake") {
-            // the simulated robot: what `m20 stand` / `m20 dock` would end in
-            return this.#run(`m20 ${action}`, dryRun, plan, async () => {
+            // the simulated robot: what `m20tool stand` / `m20tool dock` would end in
+            return this.#run(`m20tool ${action}`, dryRun, plan, async () => {
                 const fake = this.robot.fake!
                 if (action === "dock") {
                     fake.charge = 1
@@ -255,7 +255,7 @@ export class Direct {
                     fake.charge = 0
                     fake.usage = USAGE_REGULAR // the robot resets it on undock
                 } else if (CHARGE_BUSY.has(fake.charge)) {
-                    throw new Error("not going to stand: the robot is on the dock (m20 undock first)")
+                    throw new Error("not going to stand: the robot is on the dock (m20tool undock first)")
                 }
                 // stand and RL control first: the robot resets the usage mode to regular when it stands
                 await this.robot.command(2, 22, { MotionParam: MOTION_STAND })
@@ -274,7 +274,7 @@ export class Direct {
                     : "standing in RL control, navigation mode, agile stairs gait (simulated)"
             })
         }
-        return this.#run(`m20 ${action}`, dryRun, plan, async () => {
+        return this.#run(`m20tool ${action}`, dryRun, plan, async () => {
             const { code, stdout, stderr } = await new Deno.Command(cli, {
                 args: [action],
                 stdout: "piped",

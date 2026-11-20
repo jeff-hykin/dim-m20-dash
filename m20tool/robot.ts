@@ -39,7 +39,7 @@ import {
     USAGE_NAVIGATION,
     USAGE_REGULAR,
 } from "../backend/basic_server.ts"
-import { BOARD_PASSWORD, NOS_IP, USER } from "./dog.ts"
+import { AOS_IP, BOARD_PASSWORD, NOS_IP, USER } from "./dog.ts"
 import { run } from "./remote.ts"
 
 export class Fail extends Error {}
@@ -579,6 +579,43 @@ export async function chargeReset(link: Link) {
         const now_ = await link.basic()
         throw new Fail(`restarted charge_manager on NOS, but charge still reads ${name(CHARGE, now_?.Charge)}`)
     }
+}
+
+/** The vendor services on AOS the restart commands restart, and what restarting each does to the robot. */
+export const AOS_SERVICES = {
+    basic_server: {
+        unit: "basic_server.service",
+        effect: "the command hub (UDP 30000 / TCP 30001) drops its clients and comes back; the legs keep standing",
+    },
+    rl_deploy: {
+        unit: "rl_deploy.service",
+        effect: "THE WALKING CONTROLLER STOPS: the legs go limp and a standing robot drops; only with it down or held",
+    },
+} as const
+export type AosService = keyof typeof AOS_SERVICES
+
+/** Restarts one vendor service on AOS over ssh (sudo with the board password), then reports its state. */
+export async function restartAosService(service: AosService, dryRun: boolean, out: (line: string) => void) {
+    const { unit, effect } = AOS_SERVICES[service]
+    const restart = `sudo -S -p '' systemctl restart ${unit}`
+    const check = `systemctl show ${unit} -p ActiveState -p SubState -p ActiveEnterTimestamp`
+    out(`(${effect})`)
+    if (dryRun) {
+        out(`ssh ${USER}@${AOS_IP} ${restart}`)
+        out(`ssh ${USER}@${AOS_IP} ${check}`)
+        return
+    }
+    const aos = { name: "AOS", target: `${USER}@${AOS_IP}`, sharedAddress: true } as const
+    const restarted = await run(aos, restart, { stdinText: `${BOARD_PASSWORD}\n`, timeoutSeconds: 60 })
+    if (restarted.code !== 0) {
+        throw new Fail(`restarting ${unit} on AOS failed: ${restarted.stderr || restarted.stdout}`)
+    }
+    const shown = (await run(aos, check, { timeoutSeconds: 20 })).stdout
+    const state = Object.fromEntries(shown.split("\n").map((line) => line.split("=", 2)))
+    if (state.ActiveState !== "active") {
+        throw new Fail(`restarted ${unit} on AOS, but it is ${state.ActiveState ?? "unknown"} (${state.SubState ?? "?"})`)
+    }
+    out(`${unit} on AOS restarted: ${state.SubState} since ${state.ActiveEnterTimestamp}`)
 }
 
 export async function undock(link: Link) {

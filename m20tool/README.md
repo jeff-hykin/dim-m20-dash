@@ -38,8 +38,8 @@ frame (address, port, JSON, header) and sends nothing. `status` and `battery` se
 A port of the Python `m20` CLI, keeping its sequences and gotchas: the robot resets its usage mode to regular (and the
 gait to Basic) on every sit->stand and on undock, so the mode is set after standing; the axis command's floats go out as
 `0.0` (basic_server drops `"X":0`); a gait sent during a mode reset is dropped, so it confirms Basic, then sends the
-gait again on a miss. On the boards `~/.local/bin/m20` is a wrapper that runs m20tool (the Python one is kept as
-`m20.python-bak`), so M20 Ctrl and the Controller's action buttons keep calling `m20 <command>`.
+gait again on a miss. On the boards it is `/usr/local/bin/m20tool`, which M20 Ctrl and the Controller's action buttons call; an install
+removes the old `~/.local/bin/m20` wrapper (any other `m20` there is left alone).
 
 ## setup
 

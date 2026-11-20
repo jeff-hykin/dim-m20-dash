@@ -62,13 +62,13 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         assertEquals(started.active, true)
         assertMatch(started.file, /_m20_.*\.mcap$/)
 
-        // motion: dryRun calls nothing; stand up is `m20 stand` (simulated here: it stands, then sets navigation mode,
+        // motion: dryRun calls nothing; stand up is `m20tool stand` (simulated here: it stands, then sets navigation mode,
         // which the robot resets on every stand); the rest go to the blueprint's RPCs; bad actions are refused
         const dry = (await call("POST", "api/motion", { action: "liedown", dryRun: true })).json
         assertEquals(dry.wouldCall, "POST active/modules/m20connection/rpcs/liedown")
         assertMatch(
             (await call("POST", "api/motion", { action: "standup", dryRun: true })).json.wouldDo[0],
-            /m20 stand/,
+            /m20tool stand/,
         )
         assertEquals(gateway.calls, [])
         await until(async () => (await call("GET", "api/state")).json.robot.link === "up")
@@ -128,14 +128,14 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         await call("PUT", "api/fake", { board: "gos", clear: true })
 
         // direct mode: through the (simulated) robot's basic_server, nothing to the gateway. The robot stood up for the
-        // blueprint above (navigation mode): direct driving is refused (and says why) until Enable driving (m20 direct)
+        // blueprint above (navigation mode): direct driving is refused (and says why) until Enable driving (m20tool direct)
         assertEquals((await call("PUT", "api/mode", { mode: "direct" })).json.mode, "direct")
         const navMode = (await call("GET", "api/state")).json.driving
         assertEquals([navMode.ok, navMode.fixable], [false, true])
         assertMatch(navMode.reason, /navigation control mode/)
         assertEquals((await call("POST", "api/direct/move", { x: 0.5, durationMs: 300 })).status, 409)
         const enableDry = await call("POST", "api/drive/enable", { dryRun: true })
-        assertMatch(enableDry.json.wouldDo.join(" "), /m20 direct/)
+        assertMatch(enableDry.json.wouldDo.join(" "), /m20tool direct/)
         assertEquals((await call("POST", "api/drive/enable")).json.ok, true)
         assertEquals((await call("GET", "api/state")).json.driving.ok, true)
         assertEquals((await call("POST", "api/direct/move", { x: 2 })).status, 400, "axes are -1..1")
@@ -146,7 +146,7 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
         assertEquals((await call("GET", "api/blueprint")).status, 200)
         assertEquals(gateway.calls.length, 1, "only the stop went to the gateway")
 
-        // blueprint mode: regular control mode won't follow the blueprint; Enable driving runs (simulated) m20 stand
+        // blueprint mode: regular control mode won't follow the blueprint; Enable driving runs (simulated) m20tool stand
         await call("PUT", "api/mode", { mode: "blueprint" })
         assertMatch((await call("GET", "api/state")).json.driving.reason, /regular control mode/)
         assertEquals(
@@ -179,7 +179,7 @@ Deno.test("M20 Ctrl end to end: fake boards, blueprint mode, motion, direct mode
 })
 
 Deno.test(
-    "dock: through M20Connection's dock RPC in blueprint mode (refused when it has none), `m20 dock` in direct mode",
+    "dock: through M20Connection's dock RPC in blueprint mode (refused when it has none), `m20tool dock` in direct mode",
     options,
     async () => {
         const dir = Deno.makeTempDirSync()
@@ -226,12 +226,12 @@ Deno.test(
             assertEquals(old.status, 409)
             assertMatch(old.json.error, /no dock RPC.*self-charging/)
 
-            // direct mode docks through `m20 dock` (simulated here), not the gateway
+            // direct mode docks through `m20tool dock` (simulated here), not the gateway
             await call("PUT", "api/mode", { mode: "direct" })
             assertEquals((await call("POST", "api/motion", { action: "dock" })).json.ok, true)
             assertEquals(gateway.calls.length, 3)
             await until(async () => /dock|charging/.test((await call("GET", "api/state")).json.driving.reason ?? ""))
-            // undock: `m20 undock` (leave the dock, then `m20 stand`: navigation mode, so direct mode needs Enable driving)
+            // undock: `m20tool undock` (leave the dock, then `m20tool stand`: navigation mode, so direct mode needs Enable driving)
             assertEquals((await call("POST", "api/motion", { action: "undock" })).json.ok, true)
             const undocked = (await call("GET", "api/robot")).json.basic
             assertEquals([undocked.chargeName, undocked.usage], ["not charging", "navigation"])

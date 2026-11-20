@@ -1,5 +1,5 @@
 // Facts about a Deep Robotics M20 (Lynx) and the way we set them up: addresses, logins, which board is which.
-export const VERSION = "0.3.13"
+export const VERSION = "0.3.14"
 export const REPO = "jeff-hykin/dim-m20-dash"
 export const RELEASE_TAG = `m20tool-v${VERSION}`
 export const INSTALL_ONE_LINER = `curl -fsSL https://raw.githubusercontent.com/${REPO}/main/m20tool/install.sh | sh`
@@ -19,7 +19,7 @@ export const TAILSCALE_GOS = "m20-gos"
 export const TAILSCALE_AOS = "m20-aos"
 /** where m20tool goes on the boards (on PATH for every shell, ssh commands included) */
 export const BOARD_BIN = "/usr/local/bin/m20tool"
-/** the old Python CLI's path, which M20 Ctrl and the Controller's action buttons call: now a wrapper */
+/** where the old Python CLI, then a wrapper running m20tool, lived; an install removes the wrapper */
 export const OLD_CLI = "/home/user/.local/bin/m20"
 export const DOCK_LOG = "m20_dock.log"
 
@@ -68,8 +68,9 @@ COMMANDS
   m20tool status | battery      read-only: what the robot reports (sends only basic_server's heartbeat)
   m20tool stand | direct | lie_down | dock | undock | stop     move the robot (see m20tool <command> --help)
   m20tool charge_reset                                     clear a charging task stuck in error (it keeps making the robot lie down)
+  m20tool restart_basic_server                             restart the vendor's command hub on AOS (the legs keep standing)
+  m20tool restart_rl_deploy --yes                          restart the vendor's walking controller on AOS (THE ROBOT DROPS)
   The robot commands work on GOS and AOS with no arguments (basic_server is ${AOS_IP}); on a laptop they talk to
   ${AOS_IP} directly when it answers (hotspot), else run on GOS over ssh. --dry-run prints every frame, sends none.
-  \`m20\` (~/.local/bin/m20 on the boards) is the same tool, for M20 Ctrl and the Controller's buttons.
 
 Install: ${INSTALL_ONE_LINER}`

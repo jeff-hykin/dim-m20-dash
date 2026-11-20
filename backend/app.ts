@@ -53,10 +53,10 @@ export const robot = new Robot((_, command, items) => {
     }
 })
 
-/** the `m20` CLI (`m20 stand` / `m20 dock`): M20_DASH_CLI, else ~/.local/bin/m20 (where the M20 setup installs it) */
+/** the m20tool CLI (`m20tool stand` / `m20tool dock`): M20_DASH_CLI, else /usr/local/bin/m20tool (where the M20 setup installs it) */
 export const direct = new Direct(
     robot,
-    () => Deno.env.get("M20_DASH_CLI") ?? `${Deno.env.get("HOME") ?? "/home/user"}/.local/bin/m20`,
+    () => Deno.env.get("M20_DASH_CLI") ?? "/usr/local/bin/m20tool",
 )
 
 /** the recording's system logs (syslogs.ts), on /logs, while a recording with "System logs" on runs */

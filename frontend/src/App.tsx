@@ -74,9 +74,9 @@ const enableMotion = (mode: "blueprint" | "direct"): Motion => ({
     tone: "good",
     title: "Put the robot in the state this mode drives in",
     warn: mode === "blueprint"
-        ? "Runs <b>m20 stand</b>: the robot <b>STANDS UP</b> into RL control, then navigation control mode and the " +
+        ? "Runs <b>m20tool stand</b>: the robot <b>STANDS UP</b> into RL control, then navigation control mode and the " +
             "agile stairs gait (steps already done are skipped). It refuses on the dock. Make sure nothing is around its legs."
-        : "Runs <b>m20 direct</b>: the robot <b>STANDS UP</b> into RL control, then regular control mode (the one that " +
+        : "Runs <b>m20tool direct</b>: the robot <b>STANDS UP</b> into RL control, then regular control mode (the one that " +
             "takes direct commands) and the basic gait. Make sure nothing is around its legs.",
 })
 const DIRECT_SWITCH: Motion = {
@@ -107,10 +107,10 @@ const MOTIONS: Motion[] = [
         label: "Stand up",
         rpc: "standup",
         tone: "good",
-        title: "Stand up (m20 stand in blueprint mode, m20 direct in direct mode)",
+        title: "Stand up (m20tool stand in blueprint mode, m20tool direct in direct mode)",
         warn:
-            "The robot <b>stands up</b> into RL control, then the control mode and gait this mode drives in (m20 stand " +
-            "in blueprint mode, m20 direct in direct mode). Make sure nothing and no one is around its legs.",
+            "The robot <b>stands up</b> into RL control, then the control mode and gait this mode drives in (m20tool stand " +
+            "in blueprint mode, m20tool direct in direct mode). Make sure nothing and no one is around its legs.",
     },
     {
         action: "liedown",
@@ -135,9 +135,10 @@ const MOTIONS: Motion[] = [
         label: "Undock",
         rpc: "",
         tone: "warn",
-        title: "Undock (m20 undock): leave the dock, then stand up ready for blueprint driving",
-        warn: "The robot <b>walks off the charging dock</b>, then <b>stands</b> in RL control, navigation mode (m20 " +
-            "undock, then m20 stand). Make sure the way off the dock is clear.",
+        title: "Undock (m20tool undock): leave the dock, then stand up ready for blueprint driving",
+        warn:
+            "The robot <b>walks off the charging dock</b>, then <b>stands</b> in RL control, navigation mode (m20tool " +
+            "undock, then m20tool stand). Make sure the way off the dock is clear.",
     },
 ]
 

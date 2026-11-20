@@ -1,6 +1,5 @@
 // Which m20tool binary goes on the boards (aarch64 Linux); steps.ts's self-install puts it at /usr/local/bin/m20tool
-// (on PATH for every shell, ssh commands too) with ~/.local/bin/m20 (the old Python CLI's path, which M20 Ctrl and the
-// Controller's action buttons call) a wrapper.
+// (on PATH for every shell, ssh commands too).
 import { RELEASE_TAG, REPO, VERSION } from "./dog.ts"
 import { download } from "./downloads.ts"
 

@@ -3,7 +3,16 @@ import { Command } from "@cliffy/command"
 import { $ } from "dax"
 import { DEFAULT_HOST, REPORT_BASIC } from "../backend/basic_server.ts"
 import { DOCK_LOG, GOS_CABLE_IP, GOS_IP, HELP, TAILSCALE_GOS, USER, VERSION } from "./dog.ts"
-import { type CommandName, COMMANDS, dock, Fail, Link } from "./robot.ts"
+import {
+    AOS_SERVICES,
+    type AosService,
+    type CommandName,
+    COMMANDS,
+    dock,
+    Fail,
+    Link,
+    restartAosService,
+} from "./robot.ts"
 import { cleanupRunners, findDog, installSteps, prepare, runStep, setup } from "./setup.ts"
 import { boardStep } from "./board_step.ts"
 import { type Board, sshArgs, sshPortOpen } from "./remote.ts"
@@ -140,7 +149,7 @@ const cli = new Command()
     })
     .command(
         "install-on-dog",
-        "Install this m20tool on GOS and AOS (/usr/local/bin/m20tool, ~/.local/bin/m20) and their docs (~/readme, ~/AGENTS.md)",
+        "Install this m20tool on GOS and AOS (/usr/local/bin/m20tool) and their docs (~/readme, ~/AGENTS.md)",
     )
     .option("--dry-run", "Check and print, change nothing")
     .option("--gos <target:string>", "ssh target for GOS")
@@ -163,6 +172,31 @@ const cli = new Command()
             await cleanupRunners()
         }
     })
+
+for (const [service, info] of Object.entries(AOS_SERVICES)) {
+    let command = new Command()
+        .description(`Restart the vendor's ${info.unit} on AOS: ${info.effect}`)
+        .option("--dry-run", "Print the commands it would run, run nothing")
+    if (service === "rl_deploy") {
+        command = command.option("--yes", "Restart it although a standing robot drops (required)")
+    }
+    cli.command(
+        `restart_${service}`,
+        command.action(async (options: { dryRun?: boolean; yes?: boolean }) => {
+            if (service === "rl_deploy" && !options.yes && !options.dryRun) {
+                console.error(`not restarting rl_deploy without --yes: ${info.effect}`)
+                exitCode = 1
+                return
+            }
+            try {
+                await restartAosService(service as AosService, !!options.dryRun, console.log)
+            } catch (error) {
+                console.error((error as Error).message)
+                exitCode = 1
+            }
+        }),
+    )
+}
 
 for (const [name, info] of Object.entries(COMMANDS)) {
     let command = new Command()

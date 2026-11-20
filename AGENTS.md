@@ -15,7 +15,7 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
     basic_server reports (UDP 10.21.31.103:30000). On its own it sends only the heartbeat (`robot_test.ts` checks);
     commands go through its command() / usageMode() from `direct.ts` only. Needs `--unstable-net`. With the fake boards
     it simulates the robot (starts sitting, regular control mode).
-  - `direct.ts`: driving readiness per mode, Enable driving (`m20 stand` / `m20 direct`: the robot resets its usage mode
+  - `direct.ts`: driving readiness per mode, Enable driving (`m20tool stand` / `m20tool direct`: the robot resets its usage mode
     on every stand and undock, so the CLI sets it after standing), stand up / undock through `m20`, and direct mode's
     axis-command loop.
   - `recording.ts` + `mcap.ts`: the Record button's mcap (copied from G1 Ctrl), with the Record options of
@@ -57,6 +57,6 @@ mcap, and a blueprint mode that watches and commands a running dimos blueprint t
 - Two ways to drive (`direct.ts` has the details): blueprint mode publishes tele_cmd_vel for the running blueprint (the
   robot must be in navigation control mode, RL control); direct mode sends the vendor's axis commands to basic_server
   (regular control mode, standing). `readiness()` says what's in the way; Enable driving (POST api/drive/enable) fixes
-  it (`m20 stand` in blueprint mode). Blueprint mode is the default whenever a blueprint run starts.
+  it (`m20tool stand` in blueprint mode). Blueprint mode is the default whenever a blueprint run starts.
 - On a robot don't build there (no `nix build`, `deno install`): cross build, rsync, hot-load
   ([edge compute](https://github.com/jeff-hykin/dimos-desktop-mirror/blob/main/docs/create-apps/edge-compute.md)).

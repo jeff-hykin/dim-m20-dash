@@ -152,9 +152,9 @@ export const routes: Route[] = [
         description:
             `MOVES THE ROBOT. action: ${Object.keys(MOTIONS).join(", ")}. Blueprint mode: the running blueprint's ` +
             "M20Connection liedown / dock / stop_movement RPC through the dimos gateway (409 when no blueprint with " +
-            "M20Connection runs or it lacks that RPC); standup = `m20 stand` (stand, RL control, navigation mode, " +
-            "agile stairs gait). Direct mode: standup = `m20 direct` (stand, RL control, regular mode, basic gait); " +
-            "liedown = zero axes, sit; dock = `m20 dock`; stop = zero axes. Either mode: undock = `m20 undock` (leave " +
+            "M20Connection runs or it lacks that RPC); standup = `m20tool stand` (stand, RL control, navigation mode, " +
+            "agile stairs gait). Direct mode: standup = `m20tool direct` (stand, RL control, regular mode, basic gait); " +
+            "liedown = zero axes, sit; dock = `m20tool dock`; stop = zero axes. Either mode: undock = `m20tool undock` (leave " +
             "the dock, then stand). " +
             "dock starts self-charging (the robot must stand still about 2 m in front of the dock, facing it). " +
             "Returns {ok, result, error} (or {dryRun, wouldCall|wouldDo})",
@@ -187,8 +187,8 @@ export const routes: Route[] = [
         when: "the M20 won't drive (GET api/state's driving says why) and should be made ready to",
         description:
             "MOVES THE ROBOT (it stands up). Puts the robot in the state the current mode drives in. Blueprint mode: " +
-            "`m20 stand` (stand, RL control, navigation mode, agile stairs gait; refuses on the dock). Direct mode: " +
-            "`m20 direct` (stand, RL control, regular mode, basic gait). Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)",
+            "`m20tool stand` (stand, RL control, navigation mode, agile stairs gait; refuses on the dock). Direct mode: " +
+            "`m20tool direct` (stand, RL control, regular mode, basic gait). Returns {ok, result | error} ({dryRun, wouldDo} with dryRun)",
         params: { dryRun: { type: "boolean", description: "say what it would do, without doing it" } },
         handler: async ({ dryRun }) => {
             const dry = bool(dryRun, "dryRun")

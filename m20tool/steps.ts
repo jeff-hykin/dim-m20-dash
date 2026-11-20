@@ -42,10 +42,8 @@ export type BoardStep = {
 
 export const fileText = (path: string) => Deno.readTextFileSync(new URL(`./board_files/${path}`, import.meta.url))
 
-export const WRAPPER = `#!/bin/sh
-# m20 is m20tool now (github.com/jeff-hykin/dim-m20-dash, m20tool/); the old Python CLI, if there was one, is m20.python-bak
-exec ${BOARD_BIN} "$@"
-`
+/** ~/.local/bin/m20 is the shim earlier installs put there (a script running m20tool), not someone's own CLI */
+const oldWrapper = () => readText(OLD_CLI)?.includes(`exec ${BOARD_BIN}`) ?? false
 
 type FileSpec = { path: string; content: string; mode: number; owner?: "user" }
 const file = (path: string, source: string, mode: number, owner?: "user"): FileSpec => ({
@@ -486,7 +484,7 @@ function selfInstall(board: BoardName): BoardStep {
     return {
         id: `${board.toLowerCase()}/self-install`,
         board,
-        title: `${board}: m20tool (${BOARD_BIN}; ~/.local/bin/m20 runs it, for M20 Ctrl and the Controller)`,
+        title: `${board}: m20tool (${BOARD_BIN})`,
         root: true,
         check: async () => {
             const version = (await exec([BOARD_BIN, "--version"])).stdout
@@ -495,7 +493,7 @@ function selfInstall(board: BoardName): BoardStep {
             return {
                 todos: [
                     ...(same ? [] : [`${BOARD_BIN} is ${version || "missing"}, not ${VERSION}`]),
-                    ...(sameFile(OLD_CLI, WRAPPER) ? [] : [`${OLD_CLI} missing or different`]),
+                    ...(oldWrapper() ? [`${OLD_CLI} is the old m20 wrapper`] : []),
                 ],
             }
         },
@@ -511,15 +509,13 @@ function selfInstall(board: BoardName): BoardStep {
             },
             {
                 kind: "do",
-                text: `keep an old non-wrapper ${OLD_CLI} as ${OLD_CLI}.python-bak`,
+                text: `remove the old m20 wrapper ${OLD_CLI} (callers use m20tool)`,
                 run: () => {
-                    const old = readText(OLD_CLI)
-                    if (old !== null && !old.includes("m20tool")) {
-                        Deno.renameSync(at(OLD_CLI), at(`${OLD_CLI}.python-bak`))
+                    if (oldWrapper()) {
+                        Deno.removeSync(at(OLD_CLI))
                     }
                 },
             },
-            { kind: "put", path: OLD_CLI, content: WRAPPER, mode: 0o755, owner: "user" },
         ],
     }
 }

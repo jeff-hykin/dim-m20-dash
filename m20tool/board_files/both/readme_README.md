@@ -62,7 +62,7 @@ Tailscale (dimensionalos.com tailnet): `m20-gos`, `m20-aos`.
   (`/usr/local/bin/usb-ethernet-up`, `90-usb-ethernet.rules`).
 - Every M20 has the same internal addresses, so ssh host keys for 10.21.31.x / 192.168.3.2 differ between dogs.
 
-## m20tool (/usr/local/bin/m20tool; ~/.local/bin/m20 runs it)
+## m20tool (/usr/local/bin/m20tool)
 
 - `m20tool help`: addresses, logins, ways in. `m20tool status`, `m20tool battery`: read-only (heartbeat only).
 - `m20tool stand` (navigation mode, for dimos), `direct` (regular mode, for axis commands), `lie_down`, `dock`
@@ -70,6 +70,8 @@ Tailscale (dimensionalos.com tailnet): `m20-gos`, `m20-aos`.
   sends nothing. They talk to basic_server at 10.21.31.103.
 - The robot resets its usage mode to regular on every sit->stand and on undock: dimos only drives it after
   `m20tool stand`.
+- `m20tool restart_basic_server` restarts the vendor's command hub on AOS (the legs keep standing);
+  `m20tool restart_rl_deploy --yes` restarts the walking controller (the legs go limp: only with the robot down or held).
 - `m20tool setup` (from a laptop) set all of this up; rerunning it only does what's missing.
 
 ## Recovery
