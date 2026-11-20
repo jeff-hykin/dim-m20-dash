@@ -244,11 +244,23 @@ if [ "$TS_ONLINE" = 1 ]; then echo '{"BackendState":"Running","Self":{"Online":t
 }
 
 /** the distinct state transitions network-safety logs in `seconds` */
+/** the distinct state transitions in a run's output, in order */
+const statesIn = (text: string) =>
+    text.split("\n").filter((l) => l.includes("state: ")).map((l) => l.slice(l.indexOf("state: ")))
+        .filter((l, i, all) => l !== all[i - 1])
+
+/** a run that never gets there fails, rather than hanging the suite */
+const NS_GIVE_UP_MS = 180_000
+
+/**
+ * Runs network-safety against the fakes until its output shows `until.states` state transitions and matches every
+ * `until.text` (what it is waiting for, not a time: under load it just takes longer), then stops it.
+ */
 async function networkSafetyStates(
     variant: string[],
     savedMode: string,
     online: boolean,
-    seconds: number,
+    until: { states?: number; text?: RegExp[] },
     options: { connectedTo?: string; full?: (text: string, events: string) => void } = {},
 ) {
     const dir = Deno.makeTempDirSync({ prefix: "m20ns-" })
@@ -298,9 +310,41 @@ async function networkSafetyStates(
             stdout: "piped",
             stderr: "piped",
         }).spawn()
-        setTimeout(() => child.kill("SIGKILL"), seconds * 1000)
-        const out = await child.output()
-        const text = new TextDecoder().decode(out.stdout) + new TextDecoder().decode(out.stderr)
+        let text = ""
+        let reached!: () => void
+        const done = new Promise<void>((resolve) => (reached = resolve))
+        const there = () =>
+            statesIn(text).length >= (until.states ?? 0) && (until.text ?? []).every((pattern) => pattern.test(text))
+        const read = async (stream: ReadableStream<Uint8Array>) => {
+            for await (const chunk of stream.pipeThrough(new TextDecoderStream())) {
+                text += chunk
+                if (there()) {
+                    reached()
+                }
+            }
+        }
+        const reading = Promise.all([read(child.stdout), read(child.stderr)])
+        let giveUp: number | undefined
+        const gaveUp = await Promise.race([
+            done.then(() => false),
+            child.status.then(() => !there()),
+            new Promise<boolean>((resolve) => (giveUp = setTimeout(() => resolve(true), NS_GIVE_UP_MS))),
+        ])
+        clearTimeout(giveUp)
+        try {
+            child.kill("SIGKILL")
+        } catch {
+            // already exited
+        }
+        await child.status
+        await reading
+        if (gaveUp) {
+            throw new Error(
+                `network-safety never got to ${until.states ?? 0} states${
+                    until.text ? ` and ${until.text.join(", ")}` : ""
+                } (it exited, or ${NS_GIVE_UP_MS / 1000} s passed):\n${text}`,
+            )
+        }
         let events = ""
         try {
             events = Deno.readTextFileSync(`${dir}/state/events`)
@@ -308,8 +352,8 @@ async function networkSafetyStates(
             // nothing changed
         }
         options.full?.(text, events)
-        return text.split("\n").filter((l) => l.includes("state: ")).map((l) => l.slice(l.indexOf("state: ")))
-            .filter((l, i, all) => l !== all[i - 1])
+        // exactly the states waited for: a run that went on a little further doesn't change what's compared
+        return statesIn(text).slice(0, until.states)
     } finally {
         Deno.removeSync(dir, { recursive: true })
     }
@@ -327,10 +371,11 @@ const hasCompiled = (() => {
 })()
 
 for (
-    const [label, savedMode, online] of [
-        ["Wi-Fi with internet: Discovery -> Soft -> Hard", "wifiInternet", true],
-        ["no internet: Discovery runs out -> No Internet -> AP", "wifiInternet", false],
-        ["boot into AP, nobody on it -> Wi-Fi", "ap", true],
+    const [label, savedMode, online, states] of [
+        // the transitions each one goes through: to where it stays (Hard), or once around the loop back to Wi-Fi
+        ["Wi-Fi with internet: Discovery -> Soft -> Hard", "wifiInternet", true, 3],
+        ["no internet: Discovery runs out -> No Internet -> AP", "wifiInternet", false, 6],
+        ["boot into AP, nobody on it -> Wi-Fi", "ap", true, 5],
     ] as const
 ) {
     Deno.test(`network-safety (${label}): the new script${hasCompiled ? " and the compiled tool" : ""} reach the old script's states`, async () => {
@@ -338,23 +383,21 @@ for (
             [Deno.execPath(), "run", "-A", `${OLD}/network_safety_main.js`, "run"],
             savedMode,
             online,
-            8,
+            { states },
         )
         const now = await networkSafetyStates(
             [Deno.execPath(), "run", "-A", `${NEW}/aos/network_safety_main.js`, "run"],
             savedMode,
             online,
-            8,
+            { states },
         )
         const variants = [now]
         if (hasCompiled) {
-            variants.push(await networkSafetyStates([compiledNs, "run"], savedMode, online, 8))
+            variants.push(await networkSafetyStates([compiledNs, "run"], savedMode, online, { states }))
         }
-        assert(old.length >= 3, old.join("\n"))
-        for (const states of variants) {
-            const n = Math.min(old.length, states.length)
-            assert(n >= 3, states.join("\n"))
-            assertEquals(states.slice(0, n), old.slice(0, n))
+        assertEquals(old.length, states, old.join("\n"))
+        for (const found of variants) {
+            assertEquals(found, old)
         }
     })
 }
@@ -362,28 +405,33 @@ for (
 Deno.test("network-safety run --dry-run (the shadow): decides like the real loop, changes nothing", async () => {
     const script = `${NEW}/aos/network_safety_main.js`
     // steady state: on a Wi-Fi network with internet -> the same states as the real loop
-    const real = await networkSafetyStates([Deno.execPath(), "run", "-A", script, "run"], "wifiInternet", true, 10, {
-        connectedTo: "OpenNet",
-    })
+    const real = await networkSafetyStates(
+        [Deno.execPath(), "run", "-A", script, "run"],
+        "wifiInternet",
+        true,
+        { states: 2 },
+        { connectedTo: "OpenNet" },
+    )
     let shadowText = ""
     let shadowEvents = ""
     const shadow = await networkSafetyStates(
         [Deno.execPath(), "run", "-A", script, "run", "--dry-run"],
         "wifiInternet",
         true,
-        10,
+        { states: 2, text: [/input wlan: \{"connected":true,"connection":"OpenNet"\}/] },
         { connectedTo: "OpenNet", full: (text, events) => ((shadowText = text), (shadowEvents = events)) },
     )
     // Boot -> Soft (kept the network it was on) -> Hard, in both
-    assert(real.length >= 2, real.join("\n"))
-    const n = Math.min(real.length, shadow.length)
-    assertEquals(shadow.slice(0, n), real.slice(0, n))
+    assertEquals(real.length, 2, real.join("\n"))
+    assertEquals(shadow, real)
     assertEquals(shadowEvents, "")
     assert(shadowText.includes('input wlan: {"connected":true,"connection":"OpenNet"}'), shadowText)
     // in AP mode it would start the hotspot: logged, not done
     let apText = ""
     let apEvents = ""
-    await networkSafetyStates([Deno.execPath(), "run", "-A", script, "run", "--dry-run"], "ap", true, 3, {
+    await networkSafetyStates([Deno.execPath(), "run", "-A", script, "run", "--dry-run"], "ap", true, {
+        text: [/WOULD run: \S*ap_start/, /WOULD save config/],
+    }, {
         full: (text, events) => ((apText = text), (apEvents = events)),
     })
     assertEquals(apEvents, "")
