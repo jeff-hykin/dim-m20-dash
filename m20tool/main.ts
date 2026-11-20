@@ -15,8 +15,10 @@ import {
 } from "./robot.ts"
 import { cleanupRunners, findDog, installSteps, prepare, runStep, setup } from "./setup.ts"
 import { boardStep } from "./board_step.ts"
-import { type Board, sshArgs, sshPortOpen } from "./remote.ts"
+import { type Board, run, sshArgs, sshPortOpen } from "./remote.ts"
 import { compiled } from "./install.ts"
+import { exec as localExec } from "./board.ts"
+import { boardExec, describeStates, type Mode, query, type RobotState, switchMode, thisBoard } from "./modes.ts"
 
 const HOME = Deno.env.get("HOME") ?? "."
 const onBoard = () => Deno.networkInterfaces().some((i) => i.address.startsWith("10.21.31."))
@@ -48,7 +50,7 @@ function watchDockInBackground(host: string): Promise<string> {
 }
 
 /** On a laptop where basic_server doesn't answer: the same command on GOS over ssh. */
-async function overSsh(name: string, options: RobotOptions): Promise<number> {
+async function overSsh(name: string, options: RobotOptions, extra: string[] = []): Promise<number> {
     let gos: Board | null = null
     for (
         const [target, shared] of [[`${USER}@${GOS_CABLE_IP}`, true], [`${USER}@${GOS_IP}`, true], [
@@ -67,8 +69,14 @@ async function overSsh(name: string, options: RobotOptions): Promise<number> {
         )
         return 1
     }
-    const remote = ["m20tool", name, ...(options.foreground ? ["--foreground"] : [])].join(" ")
-    console.error(`(basic_server doesn't answer from here: running \`${remote}\` on GOS, ${gos.target})`)
+    const remote = ["m20tool", name, ...(options.foreground ? ["--foreground"] : []), ...extra].join(" ")
+    console.error(
+        `(${
+            extra.length || name === "mode"
+                ? "not on the dog"
+                : "basic_server doesn't answer from here"
+        }: running \`${remote}\` on GOS, ${gos.target})`,
+    )
     const result = await $`ssh ${sshArgs(gos, false)} ${remote}`.noThrow()
     if (result.code === 127) {
         console.error("m20tool isn't installed on GOS: m20tool install-on-dog")
@@ -195,6 +203,66 @@ for (const [service, info] of Object.entries(AOS_SERVICES)) {
                 exitCode = 1
             }
         }),
+    )
+}
+
+/** The vendor units' switch, run on the boards (a laptop runs it on GOS over ssh). */
+async function modeCommand(mode: Mode | null, options: { dryRun?: boolean; force?: boolean }): Promise<number> {
+    const here = thisBoard(Deno.networkInterfaces().map((i) => i.address))
+    if (!here) {
+        const extra = [...(options.dryRun ? ["--dry-run"] : []), ...(options.force ? ["--force"] : [])]
+        return await overSsh(mode ? `${mode}_mode` : "mode", {}, extra)
+    }
+    const exec = boardExec(
+        here,
+        (target, command, stdin) =>
+            run({ name: "GOS", target, sharedAddress: true }, command, { stdinText: stdin, timeoutSeconds: 120 }),
+        (command, stdin) => localExec(["sh", "-c", command], stdin),
+    )
+    try {
+        if (!mode) {
+            describeStates(await query(exec)).forEach((line) => console.log(line))
+            return 0
+        }
+        const robot = async (): Promise<RobotState> => {
+            // heartbeats only, also in a dry run: the check is read-only
+            const link = new Link(DEFAULT_HOST, false, () => {})
+            try {
+                const basic = await link.basic(0, 3)
+                return { motion: basic!.MotionState as number, charge: basic!.Charge as number }
+            } catch {
+                return null
+            } finally {
+                link.close()
+            }
+        }
+        return await switchMode(mode, exec, robot, { dryRun: !!options.dryRun, force: !!options.force }, console.log)
+    } catch (error) {
+        console.error((error as Error).message)
+        return 1
+    }
+}
+
+cli.command("mode", "Show which mode the dog is in: vendor (DrDDS stack on), rust (all of it off at boot), or mixed")
+    .action(async () => {
+        exitCode = await modeCommand(null, {})
+    })
+for (const mode of ["rust", "vendor"] as const) {
+    cli.command(
+        `${mode}_mode`,
+        new Command()
+            .description(
+                mode === "rust"
+                    ? "Disable, mask and stop every vendor DrDDS service on GOS, AOS and NOS (and the drdds-zenoh-bridge), persistently: only dimos runs; the robot can't stand. Refuses unless it is sitting or docked"
+                    : "Unmask, enable and start the vendor DrDDS services again (as before rust_mode), in a safe order",
+            )
+            .option("--dry-run", "Read the current state and print every command, change nothing")
+            .option("--force", "Switch although basic_server doesn't report the robot sitting or docked", {
+                hidden: mode === "vendor",
+            })
+            .action(async (options: { dryRun?: boolean; force?: boolean }) => {
+                exitCode = await modeCommand(mode, options)
+            }),
     )
 }
 

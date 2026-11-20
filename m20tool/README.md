@@ -28,6 +28,9 @@ direct cable.
 | `m20tool dock`                       | start autonomous charging (standing ~2 m in front of the dock, facing both reflectors); returns once the robot took it, a background copy watches it (log `~/m20_dock.log`; `--foreground` watches here) |
 | `m20tool undock`                     | leave the dock, then stand                                                                                                                                                                               |
 | `m20tool stop`                       | zero velocity (regular mode only; in navigation mode use `lie_down`)                                                                                                                                     |
+| `m20tool mode`                       | vendor mode, rust mode or mixed: each vendor DrDDS unit on GOS, AOS and NOS, enabled/masked, running (read-only)                                                                                         |
+| `m20tool rust_mode [--dry-run]`      | every vendor DrDDS service disabled, masked and stopped, at boot too: only dimos runs (below)                                                                                                            |
+| `m20tool vendor_mode [--dry-run]`    | the vendor services back as they were (unmask, enable, start)                                                                                                                                            |
 
 The robot commands talk to the vendor's basic_server on AOS (UDP 10.21.31.103:30000, TCP 30001 for the usage mode),
 through `../backend/basic_server.ts`, the same protocol code M20 Ctrl uses. On GOS and AOS they need no arguments. On a
@@ -38,8 +41,28 @@ frame (address, port, JSON, header) and sends nothing. `status` and `battery` se
 A port of the Python `m20` CLI, keeping its sequences and gotchas: the robot resets its usage mode to regular (and the
 gait to Basic) on every sit->stand and on undock, so the mode is set after standing; the axis command's floats go out as
 `0.0` (basic_server drops `"X":0`); a gait sent during a mode reset is dropped, so it confirms Basic, then sends the
-gait again on a miss. On the boards it is `/usr/local/bin/m20tool`, which M20 Ctrl and the Controller's action buttons call; an install
-removes the old `~/.local/bin/m20` wrapper (any other `m20` there is left alone).
+gait again on a miss. On the boards it is `/usr/local/bin/m20tool`, which M20 Ctrl and the Controller's action buttons
+call; an install removes the old `~/.local/bin/m20` wrapper (any other `m20` there is left alone).
+
+## Vendor mode / rust mode
+
+`rust_mode` turns off, on all three boards, every vendor service that speaks DrDDS, plus our drdds-zenoh-bridge on NOS:
+`systemctl disable`, `mask` (so nothing, M20 Ctrl's restart buttons included, can start them) and `stop`, so it holds
+across reboots. Then the robot can't stand: rl_deploy (the walking controller) and basic_server are off, and it doesn't
+charge on the dock (rl_deploy enables charging, charge_manager docks). The list is `VENDOR_UNITS` in `modes.ts`: NOS
+charge_manager, reflective_column, handler; AOS basic_server, rl_deploy; NOS drdds-zenoh-bridge, localization, rsdriver,
+yesense, cpunode; AOS height_map_nav, lio_perception, rsdriver, yesense, gps_node, ctrlmcu, cpunode; GOS cpunode,
+encryption_node, stopped in that order (whatever moves the robot first; rl_deploy before the bridge). `vendor_mode`
+starts them in the reverse order, so localization and the bridge are up before rl_deploy starts.
+
+It refuses unless basic_server reports the robot sitting, idle or damped (not entering or leaving the dock), or on the
+dock; with basic_server silent, only while rl_deploy isn't running. `--force` skips that. Each unit's state before the
+first switch (enabled / disabled) is saved on its board in `~/.local/state/m20tool/vendor_units` (the previous copy as
+`.bak`), and `vendor_mode` puts back exactly that. Every step is idempotent: a rerun finishes a half-done switch. Never
+touched: PTP (ptp4l / phc2sys), the vendor's start.service (it also rewrites the PTP units), rte_checker,
+network-safety, m20-camera, dimos hosts, Desktop, Tailscale. It runs on the boards; on a laptop it runs on GOS over ssh.
+The bridge is also the zenoh router at tcp/10.21.31.106:7447 that AOS's m20-camera and GOS's `ZENOH_CONNECT`
+(`/etc/profile.d/zenoh_connect.sh`) connect to: in rust mode something else has to listen there.
 
 ## setup
 
@@ -70,8 +93,8 @@ every step with the commands it would run.
    - GOS on all 8 cores: `isolcpus=4,5,6,7` blanked (same-length spaces, a backup kept) in the boot device tree that
      `extlinux.conf`'s `fdt` names, from the next reboot (setup never reboots), and no `CPUAffinity` in Desktop's
      drop-ins (one pinned all of dimos to the isolated cores, where it piled onto core 4).
-   - AOS's camera relay on big cores 6-7 (`m20-camera.service.d/big-cores.conf`): AOS keeps its `isolcpus` (the
-     vendor pins its lidar, IMU and SLAM there), and on the small cores the front camera couldn't hold 30 fps.
+   - AOS's camera relay on big cores 6-7 (`m20-camera.service.d/big-cores.conf`): AOS keeps its `isolcpus` (the vendor
+     pins its lidar, IMU and SLAM there), and on the small cores the front camera couldn't hold 30 fps.
    - joins the Wi-Fi from step 1: saved with autoconnect off (network-safety alone decides), network-safety restarted
      into Wi-Fi mode, then it waits for wlan0 to be on it and pings over wlan0.
    - GOS's uplink through AOS's Wi-Fi (`aos-uplink`), once AOS has internet.
@@ -123,6 +146,7 @@ phc2sys`), network-safety (`nmcli`, `iw`, `tailscale`, the vendor's `ap_start.sh
 ## Develop
 
 - `deno task m20tool <args>` runs it from source; `deno task test` includes `m20tool/robot_test.ts` (every robot command
-  against a stand-in basic_server, no robot).
+  against a stand-in basic_server, no robot) and `m20tool/modes_test.ts` (rust_mode / vendor_mode against three fake
+  boards' systemd: order, persistence, idempotence, the robot check).
 - `deno task m20tool-build` compiles all four targets into `m20tool/dist/`; `deno run -A m20tool/build.ts --release`
   also uploads them to the GitHub release `m20tool-v<VERSION>` (version: `dog.ts`, `install.sh`).
