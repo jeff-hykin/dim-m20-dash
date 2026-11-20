@@ -1149,6 +1149,17 @@ const CTRLMCU_FRAMES_FILES = () => [
     file("/etc/logrotate.d/ctrlmcu-frames", "aos/vendor_fixes/logrotate-ctrlmcu-frames", 0o644),
     file("/etc/cron.hourly/ctrlmcu-frames", "aos/vendor_fixes/cron-hourly-ctrlmcu-frames", 0o755),
 ]
+/** opt-in (not in setup): `m20tool setup-step aos/imu-udp [--revert]`; both take it on their next start */
+const aosImuUdp = vendorFiles(
+    "aos/imu-udp",
+    "AOS",
+    "AOS: yesense and rl_deploy on Fast-DDS UDPv4 only (no shared memory), so the IMU crosses loopback for m20_shadow's sniffer; from their next start (sitting or lying only)",
+    () =>
+        ["yesense", "rl_deploy"].map((unit) =>
+            file(`/etc/systemd/system/${unit}.service.d/udp-only.conf`, `aos/vendor_fixes/udp-only-${unit}.conf`, 0o644)
+        ),
+)
+
 /** a debug aid, opt-in (not in setup): `m20tool setup-step aos/ctrlmcu-frames [--revert]` */
 const aosCtrlmcuFrames = vendorFiles(
     "aos/ctrlmcu-frames",
@@ -1394,6 +1405,7 @@ export const STEPS: BoardStep[] = [
     aosVendorCpuset,
     aosCtrlmcuHideTailscale,
     aosCtrlmcuFrames,
+    aosImuUdp,
     wifi,
     aosUplink,
     dropRoute,
